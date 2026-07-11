@@ -84,4 +84,23 @@ export async function enrichPlace(place: PlaceResult): Promise<EnrichSingleRespo
   return data
 }
 
+export async function getMiniPathOptions(
+  sourceLat: number,
+  sourceLng: number,
+  destLat: number,
+  destLng: number,
+  groupSize: number = 1
+): Promise<{ status: string; options: any }> {
+  const { data } = await api.get('/routes/mini-path-options', {
+    params: {
+      source_lat: sourceLat,
+      source_lng: sourceLng,
+      dest_lat: destLat,
+      dest_lng: destLng,
+      group_size: groupSize,
+    }
+  })
+  return data
+}
+
 export default api

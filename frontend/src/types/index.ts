@@ -13,6 +13,7 @@ export interface PlaceResult {
   image_url?: string
   hotel_prices?: HotelPriceInfo
   reviews?: PlaceReview[]
+  review_source?: string
 }
 
 export interface HotelPriceInfo {
@@ -50,6 +51,11 @@ export interface RouteLeg {
   fare: number
   line?: string
   instructions?: string
+  route_numbers?: string[]
+  from_lat?: number
+  from_lng?: number
+  to_lat?: number
+  to_lng?: number
 }
 
 export interface RouteOption {
@@ -61,15 +67,21 @@ export interface RouteOption {
   overall_score: number
   legs: RouteLeg[]
   geometry?: any
+  route_id?: string
+  route_info?: string
+  route_numbers?: string[]
+  provider?: string
 }
 
 export interface RoutePlanResponse {
   status: string
-  source: { lat: number; lng: number }
-  destination: { lat: number; lng: number }
+  source: { lat: number; lng: number; name?: string }
+  destination: { lat: number; lng: number; name?: string }
   routes: RouteOption[]
   total_options: number
   travel_insights?: string
+  recommendations?: any
+  weather?: any
 }
 
 export interface SearchResponse {
@@ -112,4 +124,73 @@ export interface UserPreferences {
   budget?: number
   groupSize: number
   priority: 'cost' | 'time' | 'comfort' | 'balanced'
+}
+
+export interface MiniPathTransitOption {
+  mode: string
+  from: string
+  to: string
+  distance_km: number
+  duration_minutes: number
+  fare: number
+  stop?: any
+  station?: any
+  instructions?: string
+  from_lat?: number
+  from_lng?: number
+  to_lat?: number
+  to_lng?: number
+  stop_name?: string
+  stop_lat?: number
+  stop_lng?: number
+  station_name?: string
+  station_lat?: number
+  station_lng?: number
+}
+
+export interface MiniPathOptions {
+  source_walk_options: MiniPathTransitOption[]
+  source_to_transit: {
+    bus: MiniPathTransitOption[]
+    metro: MiniPathTransitOption[]
+  }
+  transit_to_dest: {
+    bus: MiniPathTransitOption[]
+    metro: MiniPathTransitOption[]
+  }
+  direct_distance_km: number
+}
+
+export interface MiniPathSegment {
+  from: string
+  to: string
+  selectedOption: MiniPathTransitOption | null
+  availableOptions: MiniPathTransitOption[]
+  segmentIndex: number
+}
+
+export interface BuiltRoute {
+  segments: MiniPathSegment[]
+  totalFare: number
+  totalDuration: number
+  totalDistance: number
+}
+
+export interface NewsItem {
+  title: string
+  description: string
+  impact: 'positive' | 'negative' | 'info'
+  source: string
+  timestamp: string
+  lat?: number
+  lng?: number
+}
+
+export interface MapRouteGeometry {
+  type: 'route' | 'segment' | 'hover'
+  coordinates: [number, number][]  // [lat, lng] pairs for map
+  color: string
+  weight?: number
+  dashArray?: string
+  label?: string
 }

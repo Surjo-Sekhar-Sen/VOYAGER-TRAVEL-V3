@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
-import type { PlaceResult } from '../types'
+import type { PlaceResult, MapRouteGeometry, NewsItem } from '../types'
 
 interface MapViewProps {
   center: [number, number]
@@ -13,6 +13,9 @@ interface MapViewProps {
   mapRef?: React.MutableRefObject<any>
   allMarkers: PlaceResult[]
   onMarkerClick?: (place: PlaceResult) => void
+  routeGeometry?: MapRouteGeometry[]
+  onMapClick?: (latlng: [number, number]) => void
+  newsItems?: NewsItem[]
 }
 
 function createColoredPin(color: string, emoji: string, size: number = 28, glow: boolean = false) {
@@ -26,11 +29,23 @@ function createColoredPin(color: string, emoji: string, size: number = 28, glow:
   })
 }
 
-function MapController({ center, mapRef }: { center: [number, number]; mapRef?: React.MutableRefObject<any> }) {
+function MapController({ center, mapRef, onMapClick }: {
+  center: [number, number]
+  mapRef?: React.MutableRefObject<any>
+  onMapClick?: (latlng: [number, number]) => void
+}) {
   const map = useMap()
   useEffect(() => {
     if (mapRef) mapRef.current = map
   }, [map, mapRef])
+
+  useEffect(() => {
+    if (!onMapClick) return
+    const handler = (e: L.LeafletMouseEvent) => onMapClick([e.latlng.lat, e.latlng.lng])
+    map.on('click', handler)
+    return () => { map.off('click', handler) }
+  }, [map, onMapClick])
+
   return null
 }
 
@@ -50,11 +65,20 @@ function getPlaceEmoji(placeType: string): string {
 
 export default function MapView({
   center, selectedPlace, userLocation, sourceLocation,
-  destLocation, mapRef, allMarkers, onMarkerClick
+  destLocation, mapRef, allMarkers, onMarkerClick,
+  routeGeometry, onMapClick, newsItems,
 }: MapViewProps) {
   const userIcon = useMemo(() => createColoredPin('#3b82f6', '📍', 32, true), [])
   const sourceIcon = useMemo(() => createColoredPin('#3b82f6', '🟢', 24), [])
   const destIcon = useMemo(() => createColoredPin('#ef4444', '🔴', 24), [])
+
+  const polylineColors: Record<string, string> = {
+    metro: '#22c55e', metro_interchange: '#059669',
+    walk: '#94a3b8', walk_to_bus: '#94a3b8', walk_to_metro: '#94a3b8',
+    walk_from_bus: '#94a3b8', walk_from_metro: '#94a3b8',
+    bus_ordinary: '#3b82f6', bus_ac_vajra: '#8b5cf6',
+    car: '#f97316', driving: '#f97316',
+  }
 
   return (
     <MapContainer
@@ -63,12 +87,56 @@ export default function MapView({
       style={{ width: '100%', height: '100%' }}
       zoomControl={true}
     >
-      <MapController center={center} mapRef={mapRef} />
+      <MapController center={center} mapRef={mapRef} onMapClick={onMapClick} />
 
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
+
+      {/* Route polylines */}
+      {routeGeometry?.map((rg, i) => {
+        const coords = rg.coordinates.map(c => [c[0], c[1]] as [number, number])
+        return (
+          <Polyline
+            key={`route-${i}`}
+            positions={coords}
+            pathOptions={{
+              color: rg.color,
+              weight: rg.weight || (rg.type === 'hover' ? 6 : 4),
+              opacity: rg.type === 'hover' ? 0.9 : 0.7,
+              dashArray: rg.dashArray,
+            }}
+          />
+        )
+      })}
+
+      {/* News affected-area markers */}
+      {newsItems?.map((item, i) => {
+        if (!item.lat || !item.lng) return null
+        const bgColor = item.impact === 'negative' ? '#ef4444' : item.impact === 'positive' ? '#22c55e' : '#3b82f6'
+        const emoji = item.impact === 'negative' ? '⚠️' : item.impact === 'positive' ? '✅' : 'ℹ️'
+        return (
+          <Marker
+            key={`news-${i}`}
+            position={[item.lat, item.lng]}
+            icon={L.divIcon({
+              className: '',
+              html: `<div style="font-size:18px;filter:drop-shadow(0 0 6px ${bgColor});text-align:center">${emoji}</div>`,
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+            })}
+          >
+            <Popup>
+              <div style={{ minWidth: 160 }}>
+                <strong>{item.title}</strong><br />
+                <span style={{ fontSize: 11, color: '#666' }}>{item.description}</span>
+                <div style={{ fontSize: 10, color: '#999', marginTop: 4 }}>{item.timestamp}</div>
+              </div>
+            </Popup>
+          </Marker>
+        )
+      })}
 
       {userLocation && (
         <Marker position={userLocation} icon={userIcon}>
@@ -82,7 +150,7 @@ export default function MapView({
         </Marker>
       )}
 
-      {sourceLocation && !userLocation && (
+      {sourceLocation && (
         <Marker position={sourceLocation} icon={sourceIcon}>
           <Popup>Source</Popup>
         </Marker>

@@ -116,6 +116,28 @@ class N8NService:
             pass
         return None
 
+    async def get_place_reviews(self, name: str, address: str = None) -> dict | None:
+        if not settings.N8N_WEBHOOK_URL:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{N8N_BASE}/place-reviews",
+                    json={"name": name, "address": address or f"{name}, Bengaluru"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = self._extract_llm_content(data)
+                    if content:
+                        parsed = json.loads(content)
+                        parsed["source"] = "n8n_web"
+                        return parsed
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pass
+        except Exception:
+            pass
+        return None
+
     async def is_available(self) -> bool:
         if not settings.N8N_WEBHOOK_URL:
             return False

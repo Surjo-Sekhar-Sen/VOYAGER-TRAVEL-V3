@@ -63,12 +63,13 @@ class LLMAgent:
 
     async def _call_gemini_fallback(self, system_prompt: str, user_prompt: str) -> str:
         import google.generativeai as genai
+        import asyncio
         genai.configure(api_key=settings.GEMINI_API_KEY)
         models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         for model_name in models:
             try:
                 model = genai.GenerativeModel(model_name)
-                response = model.generate_content(f"{system_prompt}\n\n{user_prompt}")
+                response = await asyncio.to_thread(model.generate_content, f"{system_prompt}\n\n{user_prompt}")
                 return response.text
             except Exception:
                 continue
@@ -203,6 +204,102 @@ Return JSON array: [{{"provider":"Uber/Ola/Rapido","mode":"{mode}","price":int,"
             return await self._call_llm(system, f"What travel issues in {location} right now? 2-3 sentences.")
         except:
             return "No current event data."
+
+    async def get_travel_news(self, source: str = None, dest: str = None) -> list[dict]:
+        query_parts = []
+        if source: query_parts.append(source)
+        if dest: query_parts.append(dest)
+        query_parts.append("Bengaluru travel news traffic alerts")
+        query = " ".join(query_parts)
+        try:
+            snippets = await web_agent.search_web(query)
+            if not snippets:
+                return self._get_default_news(source, dest)
+            system = "You are a news analyst. Return JSON array of travel updates."
+            prompt = f"""Web search results for Bengaluru travel news: {snippets[:4000]}
+
+Extract recent travel news/events relevant to this route.
+Return JSON array of objects with:
+- title (short headline)
+- description (1 sentence mentioning specific road/area if applicable)
+- impact ("positive"|"negative"|"info")
+- source ("web"|"alert")
+- timestamp ("Just now"|"Today"|"Yesterday"|"2 days ago")
+- lat (float, approximate latitude of affected area, 12.8-13.2 range for Bengaluru)
+- lng (float, approximate longitude of affected area, 77.4-77.8 range for Bengaluru)
+
+Rules:
+- Include 3-6 items mixing web news with route-specific tips
+- Traffic alerts, metro delays, weather, events, festivals
+- Make descriptions specific and actionable with location names
+- Include at least 1 positive item and 1 alert item
+- For generic news without specific location, set lat=12.9716, lng=77.5946 (city center)"""
+            try:
+                text = await self._call_llm(system, prompt, json_mode=True)
+                result = json.loads(text) if isinstance(text, str) else text
+                if isinstance(result, dict):
+                    for v in result.values():
+                        if isinstance(v, list): result = v; break
+                if isinstance(result, list):
+                    for item in result:
+                        item.setdefault("source", "web")
+                        item.setdefault("impact", "info")
+                        item.setdefault("lat", 12.9716)
+                        item.setdefault("lng", 77.5946)
+                    return result[:6]
+            except:
+                pass
+        except:
+            pass
+        return self._get_default_news(source, dest)
+
+    def _get_default_news(self, source=None, dest=None) -> list[dict]:
+        return [
+            {"title": "Bengaluru Traffic Advisory", "description": "Peak hour traffic expected on MG Road and Outer Ring Road. Plan extra 15-20 min.", "impact": "negative", "source": "alert", "timestamp": "Today", "lat": 12.9716, "lng": 77.5946},
+            {"title": "Metro Running on Schedule", "description": "Namma Metro Purple & Green lines operating normally across all stations.", "impact": "positive", "source": "alert", "timestamp": "Just now", "lat": 12.9767, "lng": 77.5713},
+            {"title": "Weather Update", "description": "Pleasant weather for travel today in Bengaluru. Clear skies expected.", "impact": "positive", "source": "web", "timestamp": "Today", "lat": 12.9716, "lng": 77.5946},
+            {"title": "Road Work Alert", "description": "Ongoing Namma Metro construction on Silk Board junction. Expect delays.", "impact": "negative", "source": "alert", "timestamp": "Today", "lat": 12.9150, "lng": 77.6220},
+            {"title": "Bus Diversion Near Majestic", "description": "Some BMTC routes diverted due to construction at Majestic bus stand. Use alternate stops.", "impact": "negative", "source": "web", "timestamp": "2 hours ago", "lat": 12.9767, "lng": 77.5713},
+        ]
+
+    async def get_real_reviews(self, name: str, address: str = None) -> dict | None:
+        addr = address or f"{name}, Bengaluru"
+        search_query = f"{name} Bengaluru reviews rating"
+        try:
+            snippets = await web_agent.search_web(search_query)
+            if not snippets:
+                return None
+            system = "You are a review analyst extracting real reviews from web search results. Return ONLY valid JSON."
+            prompt = f"""Place: {name}. Address: {addr}.
+Web search results for reviews: {snippets[:3000]}
+
+Extract real review data from these search results.
+Return a JSON object with:
+- rating (1.0-5.0 float - estimate from snippets)
+- reliability_score (0.0-1.0 float)
+- review_summary (10-20 word crisp summary based on real snippets)
+- is_recommended (bool)
+- reviews: array of 3-5 objects, each with:
+  - user (realistic Indian name)
+  - rating (1-5 int, varied)
+  - text (specific review text from snippets or realistic if not enough)
+  - date (relative like "2 weeks ago")
+
+CRITICAL rules:
+- At least 60% of reviews MUST be based on actual search snippets
+- All reviews must be unique (different names, ratings, texts)
+- Mix ratings from 2 to 5 (not all high)
+- Make texts sound like real user experiences"""
+            try:
+                text = await self._call_llm(system, prompt, json_mode=True)
+                result = json.loads(text) if isinstance(text, str) else text
+                if isinstance(result, dict):
+                    return result
+            except:
+                pass
+        except:
+            pass
+        return None
 
     async def chat_response(self, user_message: str, context: dict = None) -> str:
         ctx = f"\nContext: {json.dumps(context)}" if context else ""

@@ -1,11 +1,12 @@
-import { useState } from 'react'
-import type { AppMode, PlaceResult } from '../types'
+import { useState, useCallback } from 'react'
+import type { AppMode, PlaceResult, MapRouteGeometry, NewsItem } from '../types'
 import { enrichPlace } from '../services/api'
 import MapView from '../components/MapView'
 import SearchPanel from '../components/SearchPanel'
 import AToBPanel from '../components/AToBPanel'
 import TripPanel from '../components/TripPanel'
 import DiscoveryPanel from '../components/DiscoveryPanel'
+import NewsOverlay from '../components/NewsOverlay'
 
 interface MainPageProps {
   mode: AppMode
@@ -48,14 +49,28 @@ export default function MainPage({
   const [nearbyResults, setNearbyResults] = useState<PlaceResult[]>([])
   const [searchCenter, setSearchCenter] = useState<[number, number] | null>(null)
   const [enrichingName, setEnrichingName] = useState<string | null>(null)
+  const [routeGeometry, setRouteGeometry] = useState<MapRouteGeometry[]>([])
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
+
+  const handleLocateNews = useCallback((item: NewsItem) => {
+    if (item.lat && item.lng && mapRef.current) {
+      mapRef.current.flyTo([item.lat, item.lng], 14, { duration: 1.5 })
+    }
+  }, [])
 
   const handleSearchResults = (results: PlaceResult[], center?: [number, number]) => {
+    setNearbyResults([])
+    setShowDiscovery(false)
+    setDiscoveryPlace(null)
     setSearchResults(results)
     onMarkersUpdate(results)
     if (center) setSearchCenter(center)
   }
 
   const handleNearbyResults = (results: PlaceResult[]) => {
+    setSearchResults([])
+    setShowDiscovery(false)
+    setDiscoveryPlace(null)
     setNearbyResults(results)
     onMarkersUpdate(results)
   }
@@ -82,6 +97,17 @@ export default function MainPage({
     } finally {
       setEnrichingName(null)
     }
+  }
+
+  const handleModeChange = (newMode: AppMode) => {
+    if (newMode !== mode) {
+      setShowDiscovery(false)
+      setDiscoveryPlace(null)
+      setSearchResults([])
+      setNearbyResults([])
+      onMarkersUpdate([])
+    }
+    onModeChange(newMode)
   }
 
   const renderPanel = () => {
@@ -111,6 +137,8 @@ export default function MainPage({
             onDestLocationChange={onDestLocationChange}
             onMapCenterChange={onMapCenterChange}
             mapRef={mapRef}
+            onRouteGeometry={setRouteGeometry}
+            onNewsUpdate={setNewsItems}
           />
         )
       case 'trip':
@@ -145,19 +173,19 @@ export default function MainPage({
         <div className="mode-tabs">
           <button
             className={`mode-tab ${mode === 'search' ? 'active' : ''}`}
-            onClick={() => onModeChange('search')}
+            onClick={() => handleModeChange('search')}
           >
             🔍 SEARCH
           </button>
           <button
             className={`mode-tab ${mode === 'atob' ? 'active' : ''}`}
-            onClick={() => onModeChange('atob')}
+            onClick={() => handleModeChange('atob')}
           >
             🗺️ A-TO-B
           </button>
           <button
             className={`mode-tab ${mode === 'trip' ? 'active' : ''}`}
-            onClick={() => onModeChange('trip')}
+            onClick={() => handleModeChange('trip')}
           >
             📋 TRIP
           </button>
@@ -179,6 +207,13 @@ export default function MainPage({
           mapRef={mapRef}
           allMarkers={allMarkers}
           onMarkerClick={handleViewOnMap}
+          routeGeometry={routeGeometry}
+          newsItems={newsItems}
+        />
+        <NewsOverlay
+          news={newsItems}
+          loading={false}
+          onLocateNews={handleLocateNews}
         />
 
         {showDiscovery && discoveryPlace && (

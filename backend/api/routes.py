@@ -1,3 +1,4 @@
+import math
 from fastapi import APIRouter, Query
 from backend.models.transit import ATobRequest
 from backend.services.transit_service import transit_service
@@ -5,6 +6,20 @@ from backend.agents.llm_agent import llm_agent
 from backend.core.database import db
 
 router = APIRouter(prefix="/api/routes", tags=["Routes"])
+
+def _clean(val, default=0.0):
+    if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+        return default
+    return val
+
+def _sanitize(obj):
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float):
+        return _clean(obj)
+    return obj
 
 @router.post("/plan")
 async def plan_route(request: ATobRequest):
@@ -21,28 +36,34 @@ async def plan_route(request: ATobRequest):
             request.source_lat, request.source_lng,
             request.dest_lat, request.dest_lng
         )
-        fuel_cost = _estimate_fuel_cost(driving["distance_km"]) if driving else 0
+        if not driving:
+            dist = transit_service.haversine_distance(
+                request.source_lat, request.source_lng,
+                request.dest_lat, request.dest_lng
+            )
+            driving = {"distance_km": round(dist, 2), "duration_minutes": round(dist * 30), "geometry": None}
+        fuel_cost = _estimate_fuel_cost(driving["distance_km"])
         return {
             "status": "success",
             "mode": "personal",
             "routes": [{
                 "type": "car",
                 "total_fare": fuel_cost,
-                "total_duration_minutes": driving["duration_minutes"] if driving else 0,
-                "total_distance_km": driving["distance_km"] if driving else 0,
+                "total_duration_minutes": driving["duration_minutes"],
+                "total_distance_km": driving["distance_km"],
                 "total_walking_km": 0,
                 "overall_score": 85,
-                "geometry": driving["geometry"] if driving else None,
+                "geometry": driving.get("geometry"),
                 "legs": [{
                     "from": "Your Location",
                     "to": "Destination",
                     "mode": "car",
-                    "distance_km": driving["distance_km"] if driving else 0,
-                    "duration_minutes": driving["duration_minutes"] if driving else 0,
+                    "distance_km": driving["distance_km"],
+                    "duration_minutes": driving["duration_minutes"],
                     "fare": fuel_cost,
                     "instructions": f"Drive {driving['distance_km']:.1f}km - fuel cost approx ₹{fuel_cost}"
                 }]
-            }] if driving else []
+            }]
         }
 
     if request.mode == "walking":
@@ -160,7 +181,7 @@ async def plan_route(request: ATobRequest):
         source_name, dest_name, request.group_size, request.budget
     )
 
-    return {
+    return _sanitize({
         "status": "success",
         "source": {"lat": request.source_lat, "lng": request.source_lng, "name": source_name},
         "destination": {"lat": request.dest_lat, "lng": request.dest_lng, "name": dest_name},
@@ -168,7 +189,7 @@ async def plan_route(request: ATobRequest):
         "total_options": len(all_routes),
         "recommendations": travel_recs,
         "weather": weather
-    }
+    })
 
 def _estimate_fuel_cost(distance_km: float) -> float:
     from backend.core.config import settings
@@ -203,3 +224,28 @@ async def get_transit_fares():
 async def get_live_prices(source: str = Query(...), dest: str = Query(...), mode: str = "cab"):
     prices = await llm_agent.get_live_prices(source, dest, mode)
     return {"status": "success", "prices": prices}
+
+@router.get("/mini-path-options")
+async def get_mini_path_options(
+    source_lat: float = Query(...),
+    source_lng: float = Query(...),
+    dest_lat: float = Query(...),
+    dest_lng: float = Query(...),
+    group_size: int = Query(1)
+):
+    options = transit_service.get_mini_path_options(
+        source_lat, source_lng, dest_lat, dest_lng, group_size
+    )
+    return _sanitize({"status": "success", "options": options})
+
+@router.get("/news")
+async def get_travel_news(
+    source_lat: float = Query(None),
+    source_lng: float = Query(None),
+    dest_lat: float = Query(None),
+    dest_lng: float = Query(None),
+    source_name: str = Query(""),
+    dest_name: str = Query(""),
+):
+    news = await llm_agent.get_travel_news(source_name or None, dest_name or None)
+    return _sanitize({"status": "success", "news": news})

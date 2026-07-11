@@ -21,6 +21,9 @@ WORKFLOWS_DIR = os.path.join(os.path.dirname(__file__), "..", "workflows")
 WORKFLOW_NAMES = {
     "weather_traffic_check.json": "weather-traffic",
     "place_verification.json": "verify-place",
+    "ride_price_estimation.json": "ride-prices",
+    "hotel_price_check.json": "hotel-prices",
+    "place_reviews.json": "place-reviews",
 }
 
 

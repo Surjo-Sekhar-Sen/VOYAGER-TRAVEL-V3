@@ -212,4 +212,32 @@ class TransitDatabase:
                     break
         return routes_for_stop
 
+    def find_stop_by_name(self, name: str) -> dict | None:
+        if not name: return None
+        name_lower = name.lower().strip()
+        # Check bus stops
+        for stop in self.bus_stops.values():
+            if not isinstance(stop, dict): continue
+            sn = stop.get("name", "")
+            if isinstance(sn, str) and sn.lower().strip() == name_lower:
+                return stop
+        # Check metro stations
+        for station in self.metro_stations:
+            if not isinstance(station, dict): continue
+            sn = station.get("name", "")
+            if isinstance(sn, str) and sn.lower().strip() == name_lower:
+                return station
+        # Partial match as fallback
+        for stop in self.bus_stops.values():
+            if not isinstance(stop, dict): continue
+            sn = stop.get("name", "")
+            if isinstance(sn, str) and name_lower in sn.lower():
+                return stop
+        for station in self.metro_stations:
+            if not isinstance(station, dict): continue
+            sn = station.get("name", "")
+            if isinstance(sn, str) and name_lower in sn.lower():
+                return station
+        return None
+
 db = TransitDatabase()

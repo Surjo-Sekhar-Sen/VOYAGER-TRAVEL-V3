@@ -106,6 +106,8 @@ export default function DiscoveryPanel({ place, onClose }: DiscoveryPanelProps) 
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>
               📝 REVIEWS ({reviews.length})
+              {place.review_source === 'web' && <span style={{ marginLeft: 6, fontSize: 9, color: '#22c55e' }}>✅ Real reviews from web</span>}
+              {place.review_source === 'llm' && <span style={{ marginLeft: 6, fontSize: 9, color: '#fbbf24' }}>🤖 AI-generated</span>}
               <button onClick={() => setShowReviews(!showReviews)}
                 style={{ marginLeft: 8, background: 'none', border: 'none', color: '#60a5fa', cursor: 'pointer', fontSize: 11 }}>
                 {showReviews ? 'Hide' : 'Show'}

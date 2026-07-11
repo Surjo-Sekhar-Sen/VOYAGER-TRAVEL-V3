@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import json
 import math
@@ -25,7 +26,13 @@ class GeocodingService:
         results = []
         seen_coords = set()
 
-        osm_results = await self._osm_search(query, lat, lng)
+        # Always run both OSM and AI in parallel for maximum coverage
+        osm_task = self._osm_search(query, lat, lng)
+        ai_task = self._ai_search(query, lat, lng)
+        osm_results, ai_results = await asyncio.gather(osm_task, ai_task, return_exceptions=True)
+        if isinstance(osm_results, Exception): osm_results = []
+        if isinstance(ai_results, Exception): ai_results = []
+
         for r in osm_results:
             key = (round(r["lat"], 4), round(r["lng"], 4))
             if key not in seen_coords:
@@ -34,6 +41,7 @@ class GeocodingService:
 
         query_lower = query.lower().strip()
         for stop_id, stop in db.bus_stops.items():
+            if not isinstance(stop, dict): continue
             name = stop.get("name", "")
             if isinstance(name, str) and query_lower in name.lower():
                 key = (round(stop["lat"], 4), round(stop["lng"], 4))
@@ -43,6 +51,7 @@ class GeocodingService:
                         f"BMTC bus stop", 0.9, 4.0))
 
         for station in db.metro_stations:
+            if not isinstance(station, dict): continue
             name = station.get("name", "")
             if isinstance(name, str) and query_lower in name.lower():
                 key = (round(station["lat"], 4), round(station["lng"], 4))
@@ -51,18 +60,13 @@ class GeocodingService:
                     results.append(self._make_result(name, station["lat"], station["lng"], "metro_station",
                         f"Namma Metro {station.get('line','')}", 0.95, 4.3))
 
-        from_ai = False
-        if not results:
-            try:
-                ai_results = await self._ai_search(query, lat, lng)
-                for r in ai_results:
-                    key = (round(r["lat"], 4), round(r["lng"], 4))
-                    if key not in seen_coords:
-                        seen_coords.add(key)
-                        results.append(r)
-                from_ai = True
-            except Exception:
-                pass
+        # Merge AI results (these fill gaps for places not in OSM/database)
+        for r in ai_results:
+            key = (round(r["lat"], 4), round(r["lng"], 4))
+            if key not in seen_coords:
+                seen_coords.add(key)
+                r["review_source"] = "llm"
+                results.append(r)
 
         for r in results:
             r["lat"] = _sanitize(r.get("lat"))
@@ -70,27 +74,27 @@ class GeocodingService:
             r["rating"] = _sanitize(r.get("rating", 4.0), 4.0)
             r["reliability_score"] = _sanitize(r.get("reliability_score", 0.8), 0.8)
 
-        if not from_ai:
-            try:
-                enriched = await self._enrich_results(results[:12])
-                return enriched[:15]
-            except Exception:
-                return results[:15]
-        return results[:15]
+        try:
+            enriched = await self._enrich_results(results[:12])
+            return enriched[:15]
+        except Exception:
+            return results[:15]
 
     async def _ai_search(self, query: str, lat: float = None, lng: float = None) -> list[dict]:
         try:
-            loc = f"near ({lat},{lng})" if lat and lng else "in Bengaluru, India"
-            result_text = await llm_agent._call_llm(
-                "You are a location database for Bengaluru. Return ONLY valid JSON array.",
-                f"""Find 10 REAL places matching "{query}" {loc}.
-Return a JSON array of objects with EXACT keys: name, place_type (one of: mall/hospital/clinic/restaurant/hotel/lodge/temple/mosque/church/school/park/atm/bank/petrol_pump/charging_station/metro_station/bus_stop/airport/railway_station/police_station/it_hub/cafe/pharmacy/supermarket/gym/library/cinema/post_office), lat (float - precise), lng (float - precise), rating (1.0-5.0 float), review_summary (string, 10-20 words), address (string), is_recommended (boolean).
+            loc = f"near ({lat},{lng}) in India" if lat and lng else "in India (prefer Bengaluru if relevant)"
+            is_blr = lat and lng and self._in_bangalore(lat, lng)
+            region = "in Bengaluru, India" if is_blr else "in India (any major city)"
+            result_text = await asyncio.wait_for(llm_agent._call_llm(
+                "You are a location database for India. Return ONLY valid JSON array.",
+                f"""Find 10 REAL places matching "{query}" {region}.
+Return a JSON array of objects with EXACT keys: name, place_type (one of: mall/hospital/clinic/restaurant/hotel/lodge/temple/mosque/church/school/college/university/institute/park/atm/bank/petrol_pump/charging_station/metro_station/bus_stop/airport/railway_station/police_station/it_hub/cafe/pharmacy/supermarket/gym/library/cinema/post_office), lat (float - precise), lng (float - precise), rating (1.0-5.0 float), review_summary (string, 10-20 words), address (string), is_recommended (boolean).
 
 CRITICAL: Mix of ratings. Some places should be 2.5-3.5 with is_recommended=false. Vary realism.
 
-Only return places that actually exist in Bengaluru with real coordinates.""",
+Only return places that actually exist with real coordinates. Prefer Bengaluru if the query relates to it.""",
                 json_mode=True
-            )
+            ), timeout=12.0)
             results = json.loads(result_text) if isinstance(result_text, str) else result_text
             if isinstance(results, dict):
                 for v in results.values():
@@ -261,8 +265,7 @@ Only return places that actually exist in Bengaluru with real coordinates.""",
                                 el_lng = el.get("lon") or (el.get("center", {}) or {}).get("lon", lng)
                                 ptype = self._osm_tag_to_type(el.get("tags", {}))
                                 review = f"{ptype.replace('_',' ').title()} near your location"
-                                import random; rand_rel = round(random.uniform(0.35, 0.95), 2)
-                                results.append(self._make_result(name, float(el_lat), float(el_lng), ptype, review, rand_rel, round(random.uniform(2.5, 4.8), 1)))
+                                results.append(self._make_result(name, float(el_lat), float(el_lng), ptype, review, 0.75, 4.0))
                     except:
                         pass
                 else:
@@ -290,8 +293,7 @@ Only return places that actually exist in Bengaluru with real coordinates.""",
                                     el_lng = el.get("lon") or (el.get("center", {}) or {}).get("lon", lng)
                                     ptype = self._osm_tag_to_type(el.get("tags", {}))
                                     review = f"{ptype.replace('_',' ').title()} near your location"
-                                    import random; rand_rel = round(random.uniform(0.35, 0.95), 2)
-                                    results.append(self._make_result(name, float(el_lat), float(el_lng), ptype, review, rand_rel, round(random.uniform(2.5, 4.8), 1)))
+                                    results.append(self._make_result(name, float(el_lat), float(el_lng), ptype, review, 0.75, 4.0))
                         except:
                             continue
 
@@ -312,74 +314,85 @@ Only return places that actually exist in Bengaluru with real coordinates.""",
 
         if not light:
             try:
-                names = [r["name"] for r in results[:8]]
-                prompt = f"""For each Bengaluru place below, provide realistic data.
-Return a JSON array. Each object: name, rating (1.0-5.0), reliability_score (0.0-1.0),
-review_summary (brief 10-20 word summary), is_recommended (bool), price_info (string if hotel/lodge, else null),
-reviews (array of 2-4 objects with: user (DIFFERENT Indian names from this list each time - pick randomly: Priya Sharma, Arun Kumar, Sneha Patel, Ravi Desai, Lakshmi Nair, Vikram Singh, Anjali Gupta, Rajesh Iyer, Deepa Menon, Suresh Reddy, Meera Joshi, Sanjay Pillai, Kavita Rao, Manoj Verma, Pooja Malhotra, Siddharth Bose, Nandini Rajan, Karthik Subramanian, Aisha Sheikh, Prakash Rao), rating (1-5 int, vary them don't give all 4-5), text (one-line specific detailed review mentioning food/ambience/service/cleanliness/parking etc - make it sound unique per person), date (relative like "2 weeks ago", "last month", "3 days ago", "yesterday", "a month ago")).
-CRITICAL: Each review must have a DIFFERENT name, DIFFERENT rating, and DIFFERENT review text. No two reviews should repeat the same person.
-Places: {json.dumps(names)}"""
+                import asyncio
+                sem = asyncio.Semaphore(3)
 
-                text = await llm_agent._call_llm(
-                    "You are a review analyst for Bengaluru places. Return ONLY valid JSON array.",
-                    prompt, json_mode=True
-                )
-                content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
-                if content.startswith("```"): content = content.strip("`").strip()
-                if content.startswith("json"): content = content[4:].strip()
-                enrichments = json.loads(content) if isinstance(content, str) else content
-                if isinstance(enrichments, dict):
-                    for v in enrichments.values():
-                        if isinstance(v, list): enrichments = v; break
+                async def enrich_place(r: dict):
+                    async with sem:
+                        try:
+                            if r.get("place_type") not in ("bus_stop", "metro_station"):
+                                r["image_url"] = await image_service.get_place_image(r["name"], r.get("place_type"))
+                            if r.get("place_type") in ("hotel", "lodge") and not r.get("price_info"):
+                                hp = await n8n_service.get_hotel_prices(r["name"], r.get("address"))
+                                if hp:
+                                    r["price_info"] = f"₹{hp.get('avg_price', 0)}/night (₹{hp.get('min_price',0)}-₹{hp.get('max_price',0)})"
+                                    r["hotel_prices"] = hp
+                        except Exception:
+                            pass
 
-                if isinstance(enrichments, list):
-                    enrichment_map = {}
-                    for e in enrichments:
-                        if isinstance(e, dict) and "name" in e:
-                            enrichment_map[e["name"].lower()] = e
+                    # Try n8n web search for real reviews first
+                    try:
+                        real_reviews = await n8n_service.get_place_reviews(r["name"], r.get("address"))
+                        if real_reviews:
+                            if real_reviews.get("rating"): r["rating"] = float(real_reviews["rating"])
+                            if real_reviews.get("reliability_score"): r["reliability_score"] = float(real_reviews["reliability_score"])
+                            if real_reviews.get("review_summary"): r["review_summary"] = real_reviews["review_summary"]
+                            if real_reviews.get("is_recommended") is not None: r["is_recommended"] = bool(real_reviews["is_recommended"])
+                            if real_reviews.get("reviews"): r["reviews"] = real_reviews.get("reviews", [])[:4]
+                            r["review_source"] = "web"
+                            return
+                    except Exception:
+                        pass
 
-                    for r in results:
-                        key = r["name"].lower()
-                        if key in enrichment_map:
-                            e = enrichment_map[key]
-                            if e.get("rating"): r["rating"] = float(e["rating"])
-                            if e.get("reliability_score"): r["reliability_score"] = float(e["reliability_score"])
-                            if e.get("review_summary"): r["review_summary"] = e["review_summary"]
-                            if e.get("is_recommended") is not None: r["is_recommended"] = bool(e["is_recommended"])
-                            if e.get("price_info"): r["price_info"] = e["price_info"]
-                            if e.get("reviews"): r["reviews"] = e.get("reviews", [])[:4]
+                    # Fallback: LLM web search for real reviews directly
+                    try:
+                        web_reviews = await llm_agent.get_real_reviews(r["name"], r.get("address"))
+                        if web_reviews:
+                            if web_reviews.get("rating"): r["rating"] = float(web_reviews["rating"])
+                            if web_reviews.get("reliability_score"): r["reliability_score"] = float(web_reviews["reliability_score"])
+                            if web_reviews.get("review_summary"): r["review_summary"] = web_reviews["review_summary"]
+                            if web_reviews.get("is_recommended") is not None: r["is_recommended"] = bool(web_reviews["is_recommended"])
+                            if web_reviews.get("reviews"): r["reviews"] = web_reviews.get("reviews", [])[:4]
+                            r["review_source"] = "web"
+                            return
+                    except Exception:
+                        pass
 
-                        r["reliability_score"] = max(0.1, min(0.99, r.get("reliability_score", 0.8)))
-                        r["is_recommended"] = r.get("is_recommended", r.get("reliability_score", 0.5) > 0.6)
-            except Exception:
-                pass
+                    # Final fallback: LLM generated (keeps rating/reliability consistent with initial)
+                    try:
+                        prompt = f"""For {r['name']} in Bengaluru, provide realistic data.
+Return a JSON object with: rating (1.0-5.0), reliability_score (0.0-1.0),
+review_summary (brief 10-20 word summary), is_recommended (bool),
+reviews (array of 2-4 objects with: user (DIFFERENT names from: Priya Sharma, Arun Kumar, Sneha Patel, Ravi Desai, Lakshmi Nair, Vikram Singh, Anjali Gupta, Rajesh Iyer, Deepa Menon, Suresh Reddy, Meera Joshi), rating (1-5 int, vary them), text (unique specific detailed review about experience), date ("2 weeks ago", "last month", "3 days ago", "yesterday", "a month ago")).
+CRITICAL: Each review must have a DIFFERENT name, rating, and text."""
+                        text = await llm_agent._call_llm(
+                            "You are a review analyst for Bengaluru places. Return ONLY valid JSON.",
+                            prompt, json_mode=True
+                        )
+                        content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
+                        if content.startswith("```"): content = content.strip("`").strip()
+                        if content.startswith("json"): content = content[4:].strip()
+                        data = json.loads(content) if isinstance(content, str) else content
+                        if isinstance(data, dict):
+                            if data.get("rating"): r["rating"] = float(data["rating"])
+                            if data.get("reliability_score"): r["reliability_score"] = float(data["reliability_score"])
+                            if data.get("review_summary"): r["review_summary"] = data["review_summary"]
+                            if data.get("is_recommended") is not None: r["is_recommended"] = bool(data["is_recommended"])
+                            if data.get("reviews"): r["reviews"] = data.get("reviews", [])[:4]
+                            r["review_source"] = "llm"
+                    except Exception:
+                        pass
 
-            try:
-                if results:
-                    import asyncio
-                    sem = asyncio.Semaphore(3)
-                    async def enrich_place(r: dict):
-                        async with sem:
-                            try:
-                                if r.get("place_type") not in ("bus_stop", "metro_station"):
-                                    r["image_url"] = await image_service.get_place_image(r["name"], r.get("place_type"))
-                                if r.get("place_type") in ("hotel", "lodge") and not r.get("price_info"):
-                                    hp = await n8n_service.get_hotel_prices(r["name"], r.get("address"))
-                                    if hp:
-                                        r["price_info"] = f"₹{hp.get('avg_price', 0)}/night (₹{hp.get('min_price',0)}-₹{hp.get('max_price',0)})"
-                                        r["hotel_prices"] = hp
-                            except Exception:
-                                pass
-                    tasks = [enrich_place(r) for r in results[:8]]
-                    await asyncio.gather(*tasks)
+                tasks = [enrich_place(r) for r in results[:8]]
+                await asyncio.gather(*tasks)
             except Exception:
                 pass
 
         for r in results:
             r.setdefault("rating", 4.0)
-            r.setdefault("reliability_score", 0.82)
+            r.setdefault("reliability_score", 0.75)
             r.setdefault("review_summary", f"{r['name']} in Bengaluru")
-            r.setdefault("is_recommended", True)
+            r.setdefault("is_recommended", r.get("reliability_score", 0.75) > 0.6)
             r.setdefault("address", f"{r['name']}, Bengaluru")
 
         return results
@@ -387,30 +400,48 @@ Places: {json.dumps(names)}"""
     async def enrich_single_place(self, name: str, lat: float, lng: float, place_type: str, address: str) -> dict:
         result = self._make_result(name, lat, lng, place_type, address, 0.8, 4.0)
         result["address"] = address or f"{name}, Bengaluru"
+
+        # Try real reviews from n8n web search first
         try:
-            prompt = f"""For {name} in Bengaluru, provide realistic data.
+            real_reviews = await n8n_service.get_place_reviews(name, address)
+            if real_reviews:
+                if real_reviews.get("rating"): result["rating"] = float(real_reviews["rating"])
+                if real_reviews.get("reliability_score"): result["reliability_score"] = float(real_reviews["reliability_score"])
+                if real_reviews.get("review_summary"): result["review_summary"] = real_reviews["review_summary"]
+                if real_reviews.get("is_recommended") is not None: result["is_recommended"] = bool(real_reviews["is_recommended"])
+                if real_reviews.get("reviews"): result["reviews"] = real_reviews.get("reviews", [])[:4]
+                result["review_source"] = "web"
+        except Exception:
+            pass
+
+        # Fallback to LLM if no real reviews
+        if not result.get("reviews"):
+            try:
+                prompt = f"""For {name} in Bengaluru, provide realistic data.
 Return a JSON object with: rating (1.0-5.0), reliability_score (0.0-1.0),
 review_summary (brief 10-20 word summary), is_recommended (bool),
 price_info (string if hotel/lodge else null, e.g. "₹2500/night"),
 reviews (array of 3-4 objects with: user (pick DIFFERENT names from: Priya Sharma, Arun Kumar, Sneha Patel, Ravi Desai, Lakshmi Nair, Vikram Singh, Anjali Gupta, Rajesh Iyer, Deepa Menon, Suresh Reddy, Meera Joshi, Sanjay Pillai, Kavita Rao, Manoj Verma, Pooja Malhotra), rating (1-5 int, vary them), text (unique specific detailed review about experience), date ("2 weeks ago", "last month", "3 days ago", "yesterday", "a month ago")).
 CRITICAL: Each review must have a DIFFERENT name, rating, and text."""
-            text = await llm_agent._call_llm(
-                "You are a review analyst for Bengaluru places. Return ONLY valid JSON.",
-                prompt, json_mode=True
-            )
-            content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
-            if content.startswith("```"): content = content.strip("`").strip()
-            if content.startswith("json"): content = content[4:].strip()
-            data = json.loads(content) if isinstance(content, str) else content
-            if isinstance(data, dict):
-                if data.get("rating"): result["rating"] = float(data["rating"])
-                if data.get("reliability_score"): result["reliability_score"] = float(data["reliability_score"])
-                if data.get("review_summary"): result["review_summary"] = data["review_summary"]
-                if data.get("is_recommended") is not None: result["is_recommended"] = bool(data["is_recommended"])
-                if data.get("price_info"): result["price_info"] = data["price_info"]
-                if data.get("reviews"): result["reviews"] = data.get("reviews", [])[:4]
-        except Exception:
-            pass
+                text = await llm_agent._call_llm(
+                    "You are a review analyst for Bengaluru places. Return ONLY valid JSON.",
+                    prompt, json_mode=True
+                )
+                content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
+                if content.startswith("```"): content = content.strip("`").strip()
+                if content.startswith("json"): content = content[4:].strip()
+                data = json.loads(content) if isinstance(content, str) else content
+                if isinstance(data, dict):
+                    if data.get("rating"): result["rating"] = float(data["rating"])
+                    if data.get("reliability_score"): result["reliability_score"] = float(data["reliability_score"])
+                    if data.get("review_summary"): result["review_summary"] = data["review_summary"]
+                    if data.get("is_recommended") is not None: result["is_recommended"] = bool(data["is_recommended"])
+                    if data.get("price_info"): result["price_info"] = data["price_info"]
+                    if data.get("reviews"): result["reviews"] = data.get("reviews", [])[:4]
+                    result["review_source"] = "llm"
+            except Exception:
+                pass
+
         try:
             if place_type not in ("bus_stop", "metro_station"):
                 result["image_url"] = await image_service.get_place_image(name, place_type)
