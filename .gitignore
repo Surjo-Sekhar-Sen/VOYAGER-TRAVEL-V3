@@ -1,0 +1,29 @@
+node_modules/
+dist/
+build/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+*.db
+*.sqlite3
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+ml/__pycache__/
+data_cache/processed/
+
+# Node Modules
+node_modules/
+n8n-instance/node_modules/
+n8n-instance/dist/
+
+# Git internals
+.git/
+
+# OS files
+.DS_Store
+Thumbs.db

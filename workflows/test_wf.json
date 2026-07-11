@@ -1,0 +1,28 @@
+{
+  "id": "300caa2b-7b76-4e2c-91d1-d7e12b957a7e",
+  "name": "Test Workflow",
+  "active": false,
+  "nodes": [
+    {
+      "id": "n1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "parameters": {
+        "path": "test",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {},
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "versionId": "54bb67e9-5567-4b1a-92bb-05cbaf4abedc",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

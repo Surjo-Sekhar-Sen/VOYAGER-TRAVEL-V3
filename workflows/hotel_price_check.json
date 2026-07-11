@@ -1,0 +1,97 @@
+{
+  "name": "Hotel Price Check",
+  "nodes": [
+    {
+      "id": "wh",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "parameters": {
+        "path": "hotel-prices",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "hotel-prices"
+    },
+    {
+      "id": "or",
+      "name": "OpenRouter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        450,
+        300
+      ],
+      "parameters": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "method": "POST",
+        "sendBody": true,
+        "body": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a Bengaluru hotel price analyst. Return ONLY valid JSON.\"}, {\"role\": \"user\", \"content\": \"Estimate price range for {{$json.body.name}} in Bengaluru. Address: {{$json.body.address}}. Return JSON with: min_price (int INR per night), max_price (int INR per night), avg_price (int INR per night), currency (INR), source (MakeMyTrip/Booking.com/Goibibo), review_score (1-5), brief_summary (string).\"}], \"max_tokens\": 512, \"temperature\": 0.3}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer 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"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "http://localhost:8006"
+            },
+            {
+              "name": "X-Title",
+              "value": "VOYAGER App"
+            }
+          ]
+        },
+        "options": {
+          "bodyContentType": "json"
+        }
+      }
+    },
+    {
+      "id": "resp",
+      "name": "Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter": {
+      "main": [
+        [
+          {
+            "node": "Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {},
+  "staticData": null,
+  "tags": []
+}
