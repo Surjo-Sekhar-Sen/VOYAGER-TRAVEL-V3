@@ -51,6 +51,7 @@ export default function MainPage({
   const [enrichingName, setEnrichingName] = useState<string | null>(null)
   const [routeGeometry, setRouteGeometry] = useState<MapRouteGeometry[]>([])
   const [newsItems, setNewsItems] = useState<NewsItem[]>([])
+  const [mapWaypoints, setMapWaypoints] = useState<{ lat: number; lng: number; query: string }[]>([])
 
   const handleLocateNews = useCallback((item: NewsItem) => {
     if (item.lat && item.lng && mapRef.current) {
@@ -139,6 +140,7 @@ export default function MainPage({
             mapRef={mapRef}
             onRouteGeometry={setRouteGeometry}
             onNewsUpdate={setNewsItems}
+            onWaypointsChange={setMapWaypoints}
           />
         )
       case 'trip':
@@ -209,6 +211,7 @@ export default function MainPage({
           onMarkerClick={handleViewOnMap}
           routeGeometry={routeGeometry}
           newsItems={newsItems}
+          waypoints={mapWaypoints}
         />
         <NewsOverlay
           news={newsItems}

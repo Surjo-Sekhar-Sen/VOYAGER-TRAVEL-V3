@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { PlaceResult } from '../types'
 import { searchPlaces, getNearbyPlaces, getSuggestions } from '../services/api'
 
@@ -39,16 +39,21 @@ export default function SearchPanel({
   const [nearbyResults, setNearbyResults] = useState<PlaceResult[]>([])
   const [mode, setMode] = useState<'search' | 'nearby'>('search')
   const [searchedPlace, setSearchedPlace] = useState<PlaceResult | null>(null)
+  const searchAbortRef = useRef<AbortController | null>(null)
 
   const handleSearch = useCallback(async () => {
     const q = query.trim()
     if (!q) return
+    if (searchAbortRef.current) searchAbortRef.current.abort()
+    const ctrl = new AbortController()
+    searchAbortRef.current = ctrl
     setLoading(true)
     setError('')
     try {
       const lat = userLocation ? userLocation[0] : mapCenter[0]
       const lng = userLocation ? userLocation[1] : mapCenter[1]
-      const data = await searchPlaces(q, lat, lng)
+      const data = await searchPlaces(q, lat, lng, ctrl.signal)
+      if (ctrl.signal.aborted) return
       const places = data.results || []
       setResults(places)
       setSuggestions([])
@@ -61,6 +66,7 @@ export default function SearchPanel({
         onSelectPlace(places[0])
       }
     } catch (err) {
+      if (ctrl.signal.aborted) return
       setError('Search failed. Please try again.')
     } finally {
       setLoading(false)
@@ -158,7 +164,17 @@ export default function SearchPanel({
 
       {mode === 'search' && (
         <div>
-          {loading && <div className="loading">Searching...</div>}
+          {loading && (
+          <div className="suggestions-dropdown" style={{ position: 'relative', marginTop: 8 }}>
+            {[1,2,3].map(i => (
+              <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
+                <span style={{ display: 'inline-block', width: 16, height: 12, background: '#334155', borderRadius: 2 }} />
+                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: '#334155', borderRadius: 2, marginLeft: 6 }} />
+              </div>
+            ))}
+            <div style={{ padding: '4px 8px', fontSize: 10, color: '#64748b' }}>Searching...</div>
+          </div>
+        )}
 
           {results.length > 0 && !loading && (
             <div>
@@ -226,7 +242,24 @@ export default function SearchPanel({
             ))}
           </div>
 
-          {loading && <div className="loading">Searching nearby...</div>}
+          {loading && (
+            <div style={{ marginTop: 8 }}>
+              {[1,2,3].map(i => (
+                <div key={i} style={{ padding: 12, marginBottom: 8, background: '#1e293b', borderRadius: 8, pointerEvents: 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 14, height: 14, background: '#334155', borderRadius: '50%', display: 'inline-block' }} />
+                    <span style={{ display: 'inline-block', width: `${100 + i * 30}px`, height: 14, background: '#334155', borderRadius: 4 }} />
+                  </div>
+                  <div style={{ marginTop: 6, width: '70%', height: 10, background: '#334155', borderRadius: 4 }} />
+                  <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+                    <span style={{ width: 50, height: 10, background: '#334155', borderRadius: 4, display: 'inline-block' }} />
+                    <span style={{ width: 60, height: 10, background: '#334155', borderRadius: 4, display: 'inline-block' }} />
+                    <span style={{ width: 70, height: 10, background: '#334155', borderRadius: 4, display: 'inline-block' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{ marginTop: 8 }}>
             {nearbyResults.map((place, i) => (

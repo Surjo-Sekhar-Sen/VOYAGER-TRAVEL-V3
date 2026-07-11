@@ -65,6 +65,7 @@ export interface RouteOption {
   total_distance_km: number
   total_walking_km: number
   overall_score: number
+  score_explanation?: string
   legs: RouteLeg[]
   geometry?: any
   route_id?: string

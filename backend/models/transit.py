@@ -85,6 +85,11 @@ class SearchRequest(BaseModel):
     lng: Optional[float] = None
     radius_km: float = 2.0
 
+class Waypoint(BaseModel):
+    lat: float
+    lng: float
+    name: str = ""
+
 class ATobRequest(BaseModel):
     source_lat: float
     source_lng: float
@@ -94,3 +99,4 @@ class ATobRequest(BaseModel):
     budget: Optional[float] = None
     group_size: int = 1
     preferences: Optional[dict] = None
+    waypoints: Optional[list[Waypoint]] = None

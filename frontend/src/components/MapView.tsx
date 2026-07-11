@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { PlaceResult, MapRouteGeometry, NewsItem } from '../types'
@@ -16,6 +16,7 @@ interface MapViewProps {
   routeGeometry?: MapRouteGeometry[]
   onMapClick?: (latlng: [number, number]) => void
   newsItems?: NewsItem[]
+  waypoints?: { lat: number; lng: number; query: string }[]
 }
 
 function createColoredPin(color: string, emoji: string, size: number = 28, glow: boolean = false) {
@@ -49,6 +50,69 @@ function MapController({ center, mapRef, onMapClick }: {
   return null
 }
 
+interface TrafficRoad {
+  geometry: { type: string; coordinates: [number, number][] }
+  properties: { highway: string; color: string; name: string }
+}
+function TrafficLayer() {
+  const map = useMap()
+  const [roads, setRoads] = useState<TrafficRoad[]>([])
+  const [congestion, setCongestion] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [enabled, setEnabled] = useState(false)
+  const moveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const fetchTraffic = useCallback(async () => {
+    const b = map.getBounds()
+    try {
+      setLoading(true)
+      const resp = await fetch(`/api/routes/traffic-overlay?north=${b.getNorth()}&south=${b.getSouth()}&east=${b.getEast()}&west=${b.getWest()}`)
+      const data = await resp.json()
+      if (data.features) setRoads(data.features)
+      if (data.congestion) setCongestion(data.congestion)
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
+  }, [map])
+
+  useEffect(() => {
+    if (!enabled) { setRoads([]); return }
+    fetchTraffic()
+    const handler = () => {
+      if (moveTimer.current) clearTimeout(moveTimer.current)
+      moveTimer.current = setTimeout(fetchTraffic, 800)
+    }
+    map.on('moveend', handler)
+    return () => { map.off('moveend', handler); if (moveTimer.current) clearTimeout(moveTimer.current) }
+  }, [enabled, map, fetchTraffic])
+
+  return (
+    <>
+      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <button onClick={() => setEnabled(!enabled)}
+          style={{
+            padding: '6px 12px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
+            background: enabled ? '#1e3a5f' : '#1e293b', color: enabled ? '#60a5fa' : '#94a3b8',
+            border: enabled ? '1px solid #3b82f6' : '1px solid #475569',
+            transition: 'all 0.2s',
+          }}>
+          🚦 Traffic {enabled ? 'ON' : 'OFF'} {loading ? '...' : congestion ? `(${congestion})` : ''}
+        </button>
+      </div>
+      {enabled && roads.map((road, i) => (
+        <Polyline
+          key={`tr-${i}`}
+          positions={road.geometry.coordinates.map(c => [c[1], c[0]] as [number, number])}
+          pathOptions={{
+            color: road.properties.color,
+            weight: road.properties.highway === 'motorway' || road.properties.highway === 'trunk' ? 4 : road.properties.highway === 'primary' || road.properties.highway === 'secondary' ? 3 : 2,
+            opacity: road.properties.highway === 'motorway' || road.properties.highway === 'trunk' ? 0.8 : 0.5,
+          }}
+        />
+      ))}
+    </>
+  )
+}
+
 function getPlaceEmoji(placeType: string): string {
   const emojis: Record<string, string> = {
     mall: '🛍️', hospital: '🏥', airport: '✈️', railway_station: '🚉',
@@ -66,7 +130,7 @@ function getPlaceEmoji(placeType: string): string {
 export default function MapView({
   center, selectedPlace, userLocation, sourceLocation,
   destLocation, mapRef, allMarkers, onMarkerClick,
-  routeGeometry, onMapClick, newsItems,
+  routeGeometry, onMapClick, newsItems, waypoints,
 }: MapViewProps) {
   const userIcon = useMemo(() => createColoredPin('#3b82f6', '📍', 32, true), [])
   const sourceIcon = useMemo(() => createColoredPin('#3b82f6', '🟢', 24), [])
@@ -88,6 +152,7 @@ export default function MapView({
       zoomControl={true}
     >
       <MapController center={center} mapRef={mapRef} onMapClick={onMapClick} />
+      <TrafficLayer />
 
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -237,6 +302,25 @@ export default function MapView({
           </Popup>
         </Marker>
       )}
+
+      {/* Waypoint markers (multi-stop) */}
+      {waypoints?.map((wp, i) => (
+        <Marker
+          key={`wp-${i}`}
+          position={[wp.lat, wp.lng]}
+          icon={L.divIcon({
+            className: '',
+            html: `<div style="font-size:20px;filter:drop-shadow(0 2px 6px rgba(245,158,11,0.8))">🟠<span style="position:absolute;top:-4px;left:10px;background:#f59e0b;color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:8px;line-height:14px">${i+1}</span></div>`,
+            iconSize: [28, 28],
+            iconAnchor: [14, 28],
+          })}
+        >
+          <Popup>
+            <strong>📍 Stop {i + 1}</strong><br />
+            <span style={{ fontSize: 12, color: '#666' }}>{wp.query || `Waypoint ${i + 1}`}</span>
+          </Popup>
+        </Marker>
+      ))}
     </MapContainer>
   )
 }

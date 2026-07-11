@@ -1,7 +1,6 @@
 node_modules/
 dist/
 build/
-.env
 __pycache__/
 *.pyc
 *.pyo
@@ -27,3 +26,5 @@ n8n-instance/dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+.env

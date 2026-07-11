@@ -12,6 +12,7 @@ interface AToBPanelProps {
   mapRef: React.MutableRefObject<any>
   onRouteGeometry: (geometry: MapRouteGeometry[]) => void
   onNewsUpdate: (news: NewsItem[]) => void
+  onWaypointsChange?: (waypoints: { lat: number; lng: number; query: string }[]) => void
 }
 
 const SEGMENT_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#8b5cf6', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899']
@@ -20,11 +21,16 @@ type RouterView = 'direct' | 'segment'
 
 export default function AToBPanel({
   sourceLocation, destLocation, onSourceLocationChange, onDestLocationChange, onMapCenterChange, mapRef, onRouteGeometry, onNewsUpdate,
+  onWaypointsChange,
 }: AToBPanelProps) {
   const [sourceQuery, setSourceQuery] = useState('')
   const [destQuery, setDestQuery] = useState('')
   const [sourceSuggestions, setSourceSuggestions] = useState<PlaceResult[]>([])
   const [destSuggestions, setDestSuggestions] = useState<PlaceResult[]>([])
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [destLoading, setDestLoading] = useState(false)
+  const [waypoints, setWaypoints] = useState<{ lat: number; lng: number; query: string }[]>([])
+  const [wpSuggestions, setWpSuggestions] = useState<{ idx: number; items: PlaceResult[] } | null>(null)
   const [routes, setRoutes] = useState<RouteOption[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null)
@@ -47,27 +53,33 @@ export default function AToBPanel({
   const planRef = useRef<() => void>(() => {})
   const prevSrcRef = useRef('')
   const prevDstRef = useRef('')
-  let searchTimer: any = null
+  const prevWpRef = useRef('')
+  const srcAbortRef = useRef<AbortController | null>(null)
+  const dstAbortRef = useRef<AbortController | null>(null)
+  const wpAbortRef = useRef<AbortController | null>(null)
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Auto-fetch: always fetch when source+dest both change
+  // Auto-fetch: always fetch when source/dest/waypoints change
   useEffect(() => {
     if (sourceLocation && destLocation) {
       const srcKey = `${sourceLocation[0].toFixed(4)},${sourceLocation[1].toFixed(4)}`
       const dstKey = `${destLocation[0].toFixed(4)},${destLocation[1].toFixed(4)}`
-      if (srcKey !== prevSrcRef.current || dstKey !== prevDstRef.current) {
+      const wpKey = waypoints.filter(w => w.lat !== 0).map(w => `${w.lat.toFixed(4)},${w.lng.toFixed(4)}`).join('|')
+      if (srcKey !== prevSrcRef.current || dstKey !== prevDstRef.current || wpKey !== prevWpRef.current) {
         prevSrcRef.current = srcKey
         prevDstRef.current = dstKey
+        prevWpRef.current = wpKey
         planRef.current()
       }
     }
-  }, [sourceLocation, destLocation])
+  }, [sourceLocation, destLocation, waypoints])
 
   // Re-fetch when mode/prefs change
   useEffect(() => {
     if (sourceLocation && destLocation) {
       planRef.current()
     }
-  }, [travelMode, prefs.groupSize, prefs.budget, sourceLocation, destLocation])
+  }, [travelMode, prefs.groupSize, prefs.budget, sourceLocation, destLocation, waypoints])
 
   // Switch between direct/segment views
   useEffect(() => {
@@ -75,7 +87,12 @@ export default function AToBPanel({
       fetchMiniPath()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routerView, sourceLocation, destLocation])
+  }, [routerView, sourceLocation, destLocation, waypoints])
+
+  // Emit waypoint locations to parent for map markers
+  useEffect(() => {
+    onWaypointsChange?.(waypoints.filter(w => w.lat !== 0))
+  }, [waypoints, onWaypointsChange])
 
   // News: only fetch after routes are loaded (settled query), then every 30s
   const newsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -196,26 +213,65 @@ export default function AToBPanel({
 
   const handleSourceQuery = useCallback(async (value: string) => {
     setSourceQuery(value)
-    if (value.length < 2) { setSourceSuggestions([]); return }
-    if (searchTimer) clearTimeout(searchTimer)
-    searchTimer = setTimeout(async () => {
+    if (value.length < 2) { setSourceSuggestions([]); setSourceLoading(false); return }
+    if (srcAbortRef.current) srcAbortRef.current.abort()
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    setSourceLoading(true)
+    searchTimerRef.current = setTimeout(async () => {
+      const ctrl = new AbortController()
+      srcAbortRef.current = ctrl
       try {
-        const data = await searchPlaces(value, 12.97, 77.59)
+        const data = await searchPlaces(value, 12.97, 77.59, ctrl.signal)
         setSourceSuggestions((data.results || []).slice(0, 5))
-      } catch { setSourceSuggestions([]) }
+      } catch { if (ctrl.signal.aborted) return; setSourceSuggestions([]) }
+      finally { setSourceLoading(false) }
     }, 300)
   }, [])
 
   const handleDestQuery = useCallback(async (value: string) => {
     setDestQuery(value)
-    if (value.length < 2) { setDestSuggestions([]); return }
-    if (searchTimer) clearTimeout(searchTimer)
-    searchTimer = setTimeout(async () => {
+    if (value.length < 2) { setDestSuggestions([]); setDestLoading(false); return }
+    if (dstAbortRef.current) dstAbortRef.current.abort()
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    setDestLoading(true)
+    searchTimerRef.current = setTimeout(async () => {
+      const ctrl = new AbortController()
+      dstAbortRef.current = ctrl
       try {
-        const data = await searchPlaces(value, 12.97, 77.59)
+        const data = await searchPlaces(value, 12.97, 77.59, ctrl.signal)
         setDestSuggestions((data.results || []).slice(0, 5))
-      } catch { setDestSuggestions([]) }
+      } catch { if (ctrl.signal.aborted) return; setDestSuggestions([]) }
+      finally { setDestLoading(false) }
     }, 300)
+  }, [])
+
+  const addWaypoint = useCallback(() => {
+    setWaypoints(prev => [...prev, { lat: 0, lng: 0, query: '' }])
+  }, [])
+
+  const removeWaypoint = useCallback((idx: number) => {
+    setWaypoints(prev => prev.filter((_, i) => i !== idx))
+    setWpSuggestions(null)
+  }, [])
+
+  const handleWpQuery = useCallback(async (idx: number, value: string) => {
+    setWaypoints(prev => prev.map((wp, i) => i === idx ? { ...wp, query: value } : wp))
+    if (value.length < 2) { setWpSuggestions(null); return }
+    if (wpAbortRef.current) wpAbortRef.current.abort()
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(async () => {
+      const ctrl = new AbortController()
+      wpAbortRef.current = ctrl
+      try {
+        const data = await searchPlaces(value, 12.97, 77.59, ctrl.signal)
+        if (!ctrl.signal.aborted) setWpSuggestions({ idx, items: (data.results || []).slice(0, 5) })
+      } catch { if (ctrl.signal.aborted) return; setWpSuggestions(null) }
+    }, 300)
+  }, [])
+
+  const selectWpSuggestion = useCallback((idx: number, place: PlaceResult) => {
+    setWaypoints(prev => prev.map((wp, i) => i === idx ? { lat: place.lat, lng: place.lng, query: place.name } : wp))
+    setWpSuggestions(null)
   }, [])
 
   const handleSourceSelect = useCallback((place: PlaceResult) => {
@@ -247,10 +303,12 @@ export default function AToBPanel({
 
     try {
       const mode = travelMode === 'walking' ? 'walking' : travelMode === 'personal' ? 'personal' : 'default'
+      const wpData = waypoints.filter(wp => wp.lat !== 0).map(wp => ({ lat: wp.lat, lng: wp.lng, name: wp.query }))
       const data = await planRoute({
         source_lat: sourceLocation[0], source_lng: sourceLocation[1],
         dest_lat: destLocation[0], dest_lng: destLocation[1],
         mode, budget: prefs.budget, group_size: prefs.groupSize,
+        waypoints: wpData.length > 0 ? wpData : undefined,
       })
 
       setRoutes(data.routes || [])
@@ -278,7 +336,7 @@ export default function AToBPanel({
       setLoading(false)
       setRidePricesLoading(false)
     }
-  }, [sourceLocation, destLocation, sourceQuery, destQuery, travelMode, prefs, mapRef, fetchMiniPath, startNewsFetch])
+  }, [sourceLocation, destLocation, sourceQuery, destQuery, travelMode, prefs, mapRef, fetchMiniPath, startNewsFetch, waypoints])
   planRef.current = handlePlanRoute
 
   const handleUseCurrentLocation = useCallback(() => {
@@ -359,7 +417,18 @@ export default function AToBPanel({
             📍 Current
           </button>
         </div>
-        {sourceSuggestions.length > 0 && (
+        {sourceLoading && sourceSuggestions.length === 0 && (
+          <div className="suggestions-dropdown" style={{ position: 'relative' }}>
+            {[1,2,3].map(i => (
+              <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
+                <span style={{ display: 'inline-block', width: 16, height: 12, background: '#334155', borderRadius: 2 }} />
+                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: '#334155', borderRadius: 2, marginLeft: 6 }} />
+              </div>
+            ))}
+            <div style={{ padding: '4px 8px', fontSize: 10, color: '#64748b' }}>Searching...</div>
+          </div>
+        )}
+        {!sourceLoading && sourceSuggestions.length > 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {sourceSuggestions.map((place, i) => (
               <div key={i} className="suggestion-item" onClick={() => handleSourceSelect(place)}>
@@ -369,12 +438,48 @@ export default function AToBPanel({
             ))}
           </div>
         )}
-        <div className="input-with-icon">
+        {/* Waypoints */}
+        {waypoints.map((wp, wi) => (
+          <div key={wi} style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <span style={{ fontSize: 11, color: '#f59e0b' }}>📍{wi + 1}</span>
+            <input type="text" placeholder={`Stop ${wi + 2}...`} value={wp.query}
+              onChange={(e) => handleWpQuery(wi, e.target.value)}
+              style={{ flex: 1, padding: '6px 8px', fontSize: 12, border: '1px solid #475569', borderRadius: 6, background: '#1e293b', color: '#e2e8f0', outline: 'none' }} />
+            <button onClick={() => removeWaypoint(wi)}
+              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14, padding: '2px 6px' }}>✕</button>
+          </div>
+        ))}
+        {wpSuggestions && wpSuggestions.items.length > 0 && (
+          <div className="suggestions-dropdown" style={{ position: 'relative' }}>
+            {wpSuggestions.items.map((place, i) => (
+              <div key={i} className="suggestion-item" onClick={() => selectWpSuggestion(wpSuggestions.idx, place)}>
+                <span>{getModeIcon(place.place_type)}</span> {place.name}
+                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <button onClick={addWaypoint} disabled={waypoints.length >= 5}
+          style={{ marginTop: 4, background: '#1e3a5f', border: '1px solid #3b82f6', color: '#60a5fa', padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', width: '100%' }}>
+          + Add Stop ({waypoints.length}/5)
+        </button>
+        <div className="input-with-icon" style={{ marginTop: 4 }}>
           <span>🔴</span>
           <input type="text" placeholder="Destination..." value={destQuery}
             onChange={(e) => handleDestQuery(e.target.value)} />
         </div>
-        {destSuggestions.length > 0 && (
+        {destLoading && destSuggestions.length === 0 && (
+          <div className="suggestions-dropdown" style={{ position: 'relative' }}>
+            {[1,2,3].map(i => (
+              <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
+                <span style={{ display: 'inline-block', width: 16, height: 12, background: '#334155', borderRadius: 2 }} />
+                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: '#334155', borderRadius: 2, marginLeft: 6 }} />
+              </div>
+            ))}
+            <div style={{ padding: '4px 8px', fontSize: 10, color: '#64748b' }}>Searching...</div>
+          </div>
+        )}
+        {!destLoading && destSuggestions.length > 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {destSuggestions.map((place, i) => (
               <div key={i} className="suggestion-item" onClick={() => handleDestSelect(place)}>
@@ -646,6 +751,12 @@ function RouteCard({ route, isSelected, onSelect, isRecommended, rank, getLegCol
       </div>
 
       <div className="score-bar"><div className="score-fill" style={{ width: `${route.overall_score}%`, background: getScoreColor(route.overall_score) }} /></div>
+
+      {route.score_explanation && (
+        <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8', lineHeight: 1.4 }}>
+          💡 {route.score_explanation}
+        </div>
+      )}
 
       {route.route_numbers?.length > 0 && (
         <div style={{ marginTop: 6, marginBottom: 4, display: 'flex', gap: 4, flexWrap: 'wrap' }}>

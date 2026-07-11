@@ -7,11 +7,11 @@ const api = axios.create({
   timeout: 30000,
 })
 
-export async function searchPlaces(q: string, lat?: number, lng?: number): Promise<SearchResponse> {
+export async function searchPlaces(q: string, lat?: number, lng?: number, signal?: AbortSignal): Promise<SearchResponse> {
   const params: any = { q }
   if (lat !== undefined) params.lat = lat
   if (lng !== undefined) params.lng = lng
-  const { data } = await api.get<SearchResponse>('/search/places', { params })
+  const { data } = await api.get<SearchResponse>('/search/places', { params, signal })
   return data
 }
 
@@ -47,6 +47,7 @@ export async function planRoute(params: {
   mode?: string
   budget?: number
   group_size?: number
+  waypoints?: { lat: number; lng: number; name: string }[]
 }): Promise<RoutePlanResponse> {
   const { data } = await api.post<RoutePlanResponse>('/routes/plan', params)
   return data

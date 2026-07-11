@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import json
 import math
+import time
 from geopy.distance import geodesic
 from backend.core.database import db
 from backend.agents.llm_agent import llm_agent
@@ -10,6 +11,34 @@ from backend.services.n8n_service import n8n_service
 
 OSM_HEADERS = {"User-Agent": "VOYAGER-App/1.0 (India Transit Navigator)"}
 INDIA_BBOX = "68.7,35.5,97.4,6.7"
+
+class SearchCache:
+    def __init__(self, ttl_seconds: int = 86400):
+        self._cache: dict[str, tuple[float, list[dict]]] = {}
+        self._ttl = ttl_seconds
+
+    def _make_key(self, query: str, lat: float = None, lng: float = None) -> str:
+        if lat and lng:
+            return f"{query.strip().lower()}|{round(lat,2)}|{round(lng,2)}"
+        return query.strip().lower()
+
+    def get(self, query: str, lat: float = None, lng: float = None):
+        key = self._make_key(query, lat, lng)
+        entry = self._cache.get(key)
+        if entry and (time.time() - entry[0]) < self._ttl:
+            return entry[1]
+        if entry:
+            del self._cache[key]
+        return None
+
+    def set(self, query: str, results: list[dict], lat: float = None, lng: float = None):
+        key = self._make_key(query, lat, lng)
+        self._cache[key] = (time.time(), results)
+
+    def clear(self):
+        self._cache.clear()
+
+search_cache = SearchCache()
 
 def _sanitize(val, default=0.0):
     if val is None: return default
@@ -23,6 +52,11 @@ def _sanitize(val, default=0.0):
 class GeocodingService:
 
     async def search_places(self, query: str, lat: float = None, lng: float = None) -> list[dict]:
+        # Check cache first
+        cached = search_cache.get(query, lat, lng)
+        if cached is not None:
+            return cached
+
         results = []
         seen_coords = set()
 
@@ -74,11 +108,10 @@ class GeocodingService:
             r["rating"] = _sanitize(r.get("rating", 4.0), 4.0)
             r["reliability_score"] = _sanitize(r.get("reliability_score", 0.8), 0.8)
 
-        try:
-            enriched = await self._enrich_results(results[:12])
-            return enriched[:15]
-        except Exception:
-            return results[:15]
+        # Return raw results immediately — enrichment happens on-demand via enrich_single_place
+        out = results[:15]
+        search_cache.set(query, out, lat, lng)
+        return out
 
     async def _ai_search(self, query: str, lat: float = None, lng: float = None) -> list[dict]:
         try:
@@ -87,14 +120,10 @@ class GeocodingService:
             region = "in Bengaluru, India" if is_blr else "in India (any major city)"
             result_text = await asyncio.wait_for(llm_agent._call_llm(
                 "You are a location database for India. Return ONLY valid JSON array.",
-                f"""Find 10 REAL places matching "{query}" {region}.
-Return a JSON array of objects with EXACT keys: name, place_type (one of: mall/hospital/clinic/restaurant/hotel/lodge/temple/mosque/church/school/college/university/institute/park/atm/bank/petrol_pump/charging_station/metro_station/bus_stop/airport/railway_station/police_station/it_hub/cafe/pharmacy/supermarket/gym/library/cinema/post_office), lat (float - precise), lng (float - precise), rating (1.0-5.0 float), review_summary (string, 10-20 words), address (string), is_recommended (boolean).
-
-CRITICAL: Mix of ratings. Some places should be 2.5-3.5 with is_recommended=false. Vary realism.
-
-Only return places that actually exist with real coordinates. Prefer Bengaluru if the query relates to it.""",
+                f"""Find up to 5 REAL places matching "{query}" {region}.
+Return a JSON array of objects with EXACT keys: name, place_type (one of: mall/hospital/clinic/restaurant/hotel/lodge/temple/mosque/church/school/college/university/institute/park/atm/bank/petrol_pump/charging_station/metro_station/bus_stop/airport/railway_station/police_station/it_hub/cafe/pharmacy/supermarket/gym/library/cinema/post_office), lat (float - precise), lng (float - precise), rating (1.0-5.0 float), review_summary (string, 5-10 words), address (string), is_recommended (boolean). Only real coordinates in India.""",
                 json_mode=True
-            ), timeout=12.0)
+            ), timeout=6.0)
             results = json.loads(result_text) if isinstance(result_text, str) else result_text
             if isinstance(results, dict):
                 for v in results.values():

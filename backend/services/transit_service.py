@@ -64,7 +64,9 @@ class TransitService:
             possible_routes = [r for r in possible_routes if r["total_fare"] <= budget]
 
         for r in possible_routes:
-            r["overall_score"] = self._topsis_score(r)
+            score, expl = self._topsis_score(r)
+            r["overall_score"] = score
+            r["score_explanation"] = expl
             self._add_leg_coords(r, source_lat, source_lng, dest_lat, dest_lng)
 
         possible_routes.sort(key=lambda x: (x["overall_score"], -x.get("total_fare", 999)), reverse=True)
@@ -536,7 +538,7 @@ class TransitService:
             "dest_lat": dest_lat, "dest_lng": dest_lng,
         }
 
-    def _topsis_score(self, route: dict) -> int:
+    def _topsis_score(self, route: dict) -> tuple[int, str]:
         fare = route.get("total_fare", 100)
         duration = route.get("total_duration_minutes", 60)
         walk = route.get("total_walking_km", 0)
@@ -554,10 +556,26 @@ class TransitService:
         }
         comfort = comfort_map.get(route_type, 60)
 
+        parts = []
+        parts.append(f"fare {fare_score:.0f}/100 × 25%")
+        parts.append(f"time {time_score:.0f}/100 × 30%")
+        parts.append(f"walk {walk_score:.0f}/100 × 15%")
+        parts.append(f"comfort {comfort:.0f}/100 × 20%")
+
         final_score = int(fare_score * 0.25 + time_score * 0.30 + walk_score * 0.15 + comfort * 0.20)
-        final_score += 5 if route_type in ("metro", "metro_interchange") else 0
-        final_score += 3 if route.get("route_numbers") else 0
-        return max(10, min(99, final_score))
+        bonus_parts = []
+        if route_type in ("metro", "metro_interchange"):
+            final_score += 5
+            bonus_parts.append("metro +5")
+        if route.get("route_numbers"):
+            final_score += 3
+            bonus_parts.append("known routes +3")
+
+        explanation = " + ".join(parts)
+        if bonus_parts:
+            explanation += " | " + " + ".join(bonus_parts)
+
+        return max(10, min(99, final_score)), explanation
 
     async def get_osrm_route(self, slat, slng, dlat, dlng):
         try:
