@@ -41,19 +41,44 @@ class TransitDatabase:
         path = os.path.join(settings.DATA_CACHE_DIR, "bengaluru_metro_network.csv")
         if os.path.exists(path):
             df = pd.read_csv(path)
+            self._metro_by_code = {}
             for _, row in df.iterrows():
                 station = {
                     "name": row.get("station_name", row.get("Station_Name", "")),
                     "line": row.get("line", row.get("Line", "")),
                     "lat": float(row.get("latitude", row.get("Latitude", 0))),
                     "lng": float(row.get("longitude", row.get("Longitude", 0))),
-                    "distance_from_prev_km": float(row.get("distance_from_prev", row.get("Distance_From_Prev_km", 0)))
+                    "station_code": str(row.get("station_code", "")),
+                    "next_station_code": str(row.get("next_station_code", "")),
+                    "distance_to_next_km": float(row.get("distance_to_next_km", 0)),
+                    "is_interchange": int(row.get("is_interchange", 0)),
+                    "sequence": int(row.get("sequence", 0)),
                 }
                 self.metro_stations.append(station)
+                if station["station_code"]:
+                    self._metro_by_code[station["station_code"]] = station
                 line = station["line"]
                 if line not in self.metro_lines:
                     self.metro_lines[line] = []
                 self.metro_lines[line].append(station)
+
+            # Build distance lookup between any two stations on same line
+            self._metro_distance_cache = {}
+            for line_name, stations in self.metro_lines.items():
+                stations_sorted = sorted(stations, key=lambda s: s["sequence"])
+                station_codes = [s["station_code"] for s in stations_sorted if s["station_code"]]
+                for i, sc1 in enumerate(station_codes):
+                    cum_dist = 0.0
+                    for j in range(i, len(station_codes) - 1):
+                        sc_a = station_codes[j]
+                        sc_b = station_codes[j + 1]
+                        next_s = self._metro_by_code.get(sc_a, {})
+                        cum_dist += next_s.get("distance_to_next_km", 
+                            geodesic((next_s.get("lat",0), next_s.get("lng",0)),
+                                     (self._metro_by_code.get(sc_b, {}).get("lat",0),
+                                      self._metro_by_code.get(sc_b, {}).get("lng",0))).km)
+                        if sc1 != sc_b:
+                            self._metro_distance_cache[(sc1, sc_b)] = round(cum_dist, 2)
 
     def _load_bus_stops(self):
         path = os.path.join(settings.DATA_CACHE_DIR, "bmtc_all_stops_master.csv")
@@ -140,6 +165,29 @@ class TransitDatabase:
                 results.append({**stop, "distance_km": round(dist, 3)})
         results.sort(key=lambda x: x["distance_km"])
         return results[:20]
+
+    def get_metro_distance_between(self, stn_a_name: str, stn_b_name: str) -> float:
+        code_a = code_b = None
+        for s in self.metro_stations:
+            if s["name"].lower() == stn_a_name.lower(): code_a = s["station_code"]
+            if s["name"].lower() == stn_b_name.lower(): code_b = s["station_code"]
+        if code_a and code_b:
+            dist = self._metro_distance_cache.get((code_a, code_b))
+            if dist: return dist
+            dist = self._metro_distance_cache.get((code_b, code_a))
+            if dist: return dist
+        for s in self.metro_stations:
+            if s["name"].lower() == stn_a_name.lower():
+                for s2 in self.metro_stations:
+                    if s2["name"].lower() == stn_b_name.lower():
+                        if s["line"] == s2["line"]:
+                            return abs(s2["sequence"] - s["sequence"]) * 1.2
+        return geodesic(
+            (next((s["lat"] for s in self.metro_stations if s["name"].lower() == stn_a_name.lower()), 0),
+             next((s["lng"] for s in self.metro_stations if s["name"].lower() == stn_a_name.lower()), 0)),
+            (next((s["lat"] for s in self.metro_stations if s["name"].lower() == stn_b_name.lower()), 0),
+             next((s["lng"] for s in self.metro_stations if s["name"].lower() == stn_b_name.lower()), 0))
+        ).km
 
     def find_nearby_metro_stations(self, lat: float, lng: float, radius_km: float = 2.0) -> list:
         results = []

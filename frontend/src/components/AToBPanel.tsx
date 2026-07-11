@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
-import type { RouteOption, RoutePlanResponse, UserPreferences, RidePrice } from '../types'
-import { planRoute, getRidePrices } from '../services/api'
+import type { RouteOption, RoutePlanResponse, UserPreferences, RidePrice, PlaceResult } from '../types'
+import { planRoute, getRidePrices, searchPlaces } from '../services/api'
 import { getModeIcon, getModeLabel, formatDuration, formatRupees, getScoreColor } from '../utils/helpers'
 
 interface AToBPanelProps {
@@ -12,24 +12,6 @@ interface AToBPanelProps {
   mapRef: React.MutableRefObject<any>
 }
 
-const OFFLINE_PLACES = [
-  { name: 'Majestic (Kempegowda Bus Station)', lat: 12.9760, lng: 77.5720 },
-  { name: 'MG Road Metro', lat: 12.9750, lng: 77.6060 },
-  { name: 'Electronic City', lat: 12.8450, lng: 77.6600 },
-  { name: 'Whitefield', lat: 12.9698, lng: 77.7500 },
-  { name: 'Kempegowda International Airport', lat: 13.1989, lng: 77.7068 },
-  { name: 'Koramangala', lat: 12.9279, lng: 77.6271 },
-  { name: 'Indiranagar', lat: 12.9719, lng: 77.6400 },
-  { name: 'Jayanagar', lat: 12.9250, lng: 77.5930 },
-  { name: 'Banashankari', lat: 12.9170, lng: 77.5470 },
-  { name: 'Hebbal', lat: 13.0358, lng: 77.5970 },
-  { name: 'Yeshwanthpur', lat: 13.0220, lng: 77.5460 },
-  { name: 'BTM Layout', lat: 12.9166, lng: 77.6101 },
-  { name: 'HSR Layout', lat: 12.9116, lng: 77.6389 },
-  { name: 'Marathahalli', lat: 12.9591, lng: 77.7000 },
-  { name: 'Rajajinagar', lat: 12.9900, lng: 77.5600 },
-]
-
 export default function AToBPanel({
   sourceLocation,
   destLocation,
@@ -40,12 +22,12 @@ export default function AToBPanel({
 }: AToBPanelProps) {
   const [sourceQuery, setSourceQuery] = useState('')
   const [destQuery, setDestQuery] = useState('')
-  const [sourceSuggestions, setSourceSuggestions] = useState<typeof OFFLINE_PLACES>([])
-  const [destSuggestions, setDestSuggestions] = useState<typeof OFFLINE_PLACES>([])
+  const [sourceSuggestions, setSourceSuggestions] = useState<PlaceResult[]>([])
+  const [destSuggestions, setDestSuggestions] = useState<PlaceResult[]>([])
   const [routes, setRoutes] = useState<RouteOption[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null)
-  const [travelMode, setTravelMode] = useState<'personal' | 'public'>('public')
+  const [travelMode, setTravelMode] = useState<'public' | 'personal' | 'walking'>('public')
   const [prefs, setPrefs] = useState<UserPreferences>({
     budget: undefined,
     groupSize: 1,
@@ -55,38 +37,40 @@ export default function AToBPanel({
   const [ridePrices, setRidePrices] = useState<RidePrice[]>([])
   const [ridePricesLoading, setRidePricesLoading] = useState(false)
 
-  const handleSourceQuery = useCallback((value: string) => {
+  let searchTimer: any = null
+
+  const handleSourceQuery = useCallback(async (value: string) => {
     setSourceQuery(value)
-    if (value.length < 1) {
-      setSourceSuggestions([])
-      return
-    }
-    const filtered = OFFLINE_PLACES.filter(p =>
-      p.name.toLowerCase().includes(value.toLowerCase())
-    ).slice(0, 5)
-    setSourceSuggestions(filtered)
+    if (value.length < 2) { setSourceSuggestions([]); return }
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(async () => {
+      try {
+        const data = await searchPlaces(value, 12.97, 77.59)
+        setSourceSuggestions((data.results || []).slice(0, 5))
+      } catch { setSourceSuggestions([]) }
+    }, 300)
   }, [])
 
-  const handleDestQuery = useCallback((value: string) => {
+  const handleDestQuery = useCallback(async (value: string) => {
     setDestQuery(value)
-    if (value.length < 1) {
-      setDestSuggestions([])
-      return
-    }
-    const filtered = OFFLINE_PLACES.filter(p =>
-      p.name.toLowerCase().includes(value.toLowerCase())
-    ).slice(0, 5)
-    setDestSuggestions(filtered)
+    if (value.length < 2) { setDestSuggestions([]); return }
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(async () => {
+      try {
+        const data = await searchPlaces(value, 12.97, 77.59)
+        setDestSuggestions((data.results || []).slice(0, 5))
+      } catch { setDestSuggestions([]) }
+    }, 300)
   }, [])
 
-  const handleSourceSelect = useCallback((place: typeof OFFLINE_PLACES[0]) => {
+  const handleSourceSelect = useCallback((place: PlaceResult) => {
     setSourceQuery(place.name)
     onSourceLocationChange([place.lat, place.lng])
     setSourceSuggestions([])
     onMapCenterChange([place.lat, place.lng])
   }, [onSourceLocationChange, onMapCenterChange])
 
-  const handleDestSelect = useCallback((place: typeof OFFLINE_PLACES[0]) => {
+  const handleDestSelect = useCallback((place: PlaceResult) => {
     setDestQuery(place.name)
     onDestLocationChange([place.lat, place.lng])
     setDestSuggestions([])
@@ -103,12 +87,13 @@ export default function AToBPanel({
     setRidePricesLoading(true)
 
     try {
+      const mode = travelMode === 'walking' ? 'walking' : travelMode === 'personal' ? 'personal' : 'default'
       const data = await planRoute({
         source_lat: sourceLocation[0],
         source_lng: sourceLocation[1],
         dest_lat: destLocation[0],
         dest_lng: destLocation[1],
-        mode: travelMode === 'personal' ? 'personal' : 'default',
+        mode,
         budget: prefs.budget,
         group_size: prefs.groupSize,
       })
@@ -124,7 +109,7 @@ export default function AToBPanel({
         mapRef.current.fitBounds(bounds, { padding: [50, 50] })
       }
 
-      if (sourceQuery && destQuery) {
+      if (sourceQuery && destQuery && travelMode !== 'walking') {
         try {
           const rideData = await getRidePrices(sourceQuery, destQuery)
           setRidePrices(rideData.prices || [])
@@ -185,7 +170,8 @@ export default function AToBPanel({
                 className="suggestion-item"
                 onClick={() => handleSourceSelect(place)}
               >
-                {place.name}
+                <span>{getModeIcon(place.place_type)}</span> {place.name}
+                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
               </div>
             ))}
           </div>
@@ -209,7 +195,8 @@ export default function AToBPanel({
                 className="suggestion-item"
                 onClick={() => handleDestSelect(place)}
               >
-                {place.name}
+                <span>{getModeIcon(place.place_type)}</span> {place.name}
+                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
               </div>
             ))}
           </div>
@@ -255,13 +242,19 @@ export default function AToBPanel({
           className={`mode-btn ${travelMode === 'public' ? 'active' : ''}`}
           onClick={() => setTravelMode('public')}
         >
-          🚌 Public / Online
+          🚌 Public Transit
         </button>
         <button
           className={`mode-btn ${travelMode === 'personal' ? 'active' : ''}`}
           onClick={() => setTravelMode('personal')}
         >
-          🚗 Personal / Walk
+          🚗 Drive
+        </button>
+        <button
+          className={`mode-btn ${travelMode === 'walking' ? 'active' : ''}`}
+          onClick={() => setTravelMode('walking')}
+        >
+          🚶 Walk
         </button>
       </div>
 
@@ -341,6 +334,8 @@ function RouteCard({ route, isSelected, onSelect }: {
   isSelected: boolean
   onSelect: () => void
 }) {
+  const totalMin = route.total_duration_minutes || 1
+
   return (
     <div className={`route-card ${isSelected ? 'selected' : ''}`} onClick={onSelect}>
       <div className="route-header">
@@ -370,17 +365,60 @@ function RouteCard({ route, isSelected, onSelect }: {
         />
       </div>
 
+      {route.legs && route.legs.length > 0 && (
+        <div style={{ marginTop: 8, marginBottom: 8 }}>
+          <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', gap: 2 }}>
+            {route.legs.map((leg, j) => {
+              const pct = Math.max(5, (leg.duration_minutes / totalMin) * 100)
+              const colors: Record<string, string> = {
+                walk: '#94a3b8',
+                bus_ordinary: '#3b82f6',
+                bus_ac_vajra: '#8b5cf6',
+                metro: '#22c55e',
+                car: '#f97316',
+                cab: '#f59e0b',
+              }
+              return (
+                <div
+                  key={j}
+                  title={`${getModeLabel(leg.mode)}: ${formatDuration(leg.duration_minutes)}`}
+                  style={{
+                    width: `${pct}%`,
+                    background: colors[leg.mode] || '#64748b',
+                    position: 'relative',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <span style={{ fontSize: 8, lineHeight: '10px' }}>{getModeIcon(leg.mode)}</span>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#64748b', marginTop: 2 }}>
+            <span>{route.legs[0].from.slice(0, 12)}</span>
+            <span>{route.legs[route.legs.length - 1].to.slice(0, 12)}</span>
+          </div>
+        </div>
+      )}
+
       <div className="route-legs">
         {route.legs?.map((leg, j) => (
           <div key={j} className="route-leg">
             <span>{getModeIcon(leg.mode)}</span>
-            <span>{getModeLabel(leg.mode)}</span>
+            <span>{getModeLabel(leg.mode)}{leg.line ? ` (${leg.line})` : ''}</span>
             <span>{leg.distance_km > 0 ? `${leg.distance_km.toFixed(1)} km` : ''}</span>
             <span>{formatDuration(leg.duration_minutes)}</span>
             {leg.fare > 0 && <span>{formatRupees(leg.fare)}</span>}
             <span style={{ color: '#94a3b8', fontSize: 11 }}>
-              {leg.from} → {leg.to}
+              {leg.from.slice(0, 20)} → {leg.to.slice(0, 20)}
             </span>
+            {leg.instructions && (
+              <span style={{ color: '#64748b', fontSize: 10, fontStyle: 'italic', marginTop: 2 }}>
+                💡 {leg.instructions}
+              </span>
+            )}
           </div>
         ))}
       </div>

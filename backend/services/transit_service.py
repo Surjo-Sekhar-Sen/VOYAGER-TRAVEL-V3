@@ -23,7 +23,10 @@ class TransitService:
         if budget:
             possible_routes = [r for r in possible_routes if r["total_fare"] <= budget]
 
-        possible_routes.sort(key=lambda x: x["overall_score"], reverse=True)
+        for r in possible_routes:
+            r["overall_score"] = self._topsis_score(r)
+
+        possible_routes.sort(key=lambda x: (x["overall_score"], -x["total_fare"]), reverse=True)
         return possible_routes[:5]
 
     def _generate_bus_routes(self, slat, slng, dlat, dlng, dist, group_size):
@@ -165,67 +168,141 @@ class TransitService:
         return routes
 
     def _generate_kia_routes(self, slat, slng, dlat, dlng, dist, group_size):
-        return []
+        routes = []
+        if not db.kia_routes:
+            return routes
+        nearby_src_stops = db.find_nearby_bus_stops(slat, slng, 2.0)
+        nearby_dest_stops = db.find_nearby_bus_stops(dlat, dlng, 2.0)
+        if not nearby_src_stops or not nearby_dest_stops:
+            return routes
+        src_stop = nearby_src_stops[0]
+        dest_stop = nearby_dest_stops[0]
+        src_stop_name = src_stop["name"].lower()
+        dest_stop_name = dest_stop["name"].lower()
+        for route_id, route_data in db.kia_routes.items():
+            stops = route_data.get("stops", [])
+            src_idx = None
+            dest_idx = None
+            for i, s in enumerate(stops):
+                sn = s["stop_name"].lower()
+                if src_stop_name in sn or sn in src_stop_name:
+                    src_idx = i
+                if dest_stop_name in sn or sn in dest_stop_name:
+                    dest_idx = i
+            if src_idx is not None and dest_idx is not None and src_idx < dest_idx:
+                src_s = stops[src_idx]
+                dest_s = stops[dest_idx]
+                kia_fare = dest_s.get("fare", 0) - src_s.get("fare", 0)
+                if kia_fare <= 0 and dest_s.get("fare", 0) > 0:
+                    kia_fare = dest_s.get("fare", 210)
+                walking_to = 0
+                walking_from = 0
+                kia_dist = dist * 0.8
+                routes.append({
+                    "type": "kia_bus",
+                    "total_fare": max(kia_fare, 50) * group_size,
+                    "total_duration_minutes": round((kia_dist / 40) * 60 + (walking_to + walking_from) * 12),
+                    "total_distance_km": round(kia_dist + walking_to + walking_from, 2),
+                    "total_walking_km": round(walking_to + walking_from, 2),
+                    "overall_score": 82,
+                    "route_id": route_id,
+                    "route_info": route_data.get("route_info", ""),
+                    "legs": [
+                        {"from": "Your Location", "to": src_s["stop_name"], "mode": "walk",
+                         "distance_km": round(walking_to, 2), "duration_minutes": round(walking_to * 12), "fare": 0},
+                        {"from": src_s["stop_name"], "to": dest_s["stop_name"], "mode": "bus_ac_vajra",
+                         "distance_km": round(kia_dist, 2), "duration_minutes": round((kia_dist / 40) * 60),
+                         "fare": max(kia_fare, 50) * group_size, "line": route_id, "instructions": route_data.get("route_info", "")},
+                        {"from": dest_s["stop_name"], "to": "Your Destination", "mode": "walk",
+                         "distance_km": round(walking_from, 2), "duration_minutes": round(walking_from * 12), "fare": 0}
+                    ]
+                })
+        return routes[:2]
 
     def _generate_multi_modal_routes(self, slat, slng, dlat, dlng, dist, group_size):
         routes = []
-        nearby_bus_stops = db.find_nearby_bus_stops(slat, slng, 1.0)
-        nearby_metro = db.find_nearby_metro_stations(dlat, dlng, 2.0)
+        bus_stops = db.find_nearby_bus_stops(slat, slng, 1.0)
+        metro_stations = db.find_nearby_metro_stations(slat, slng, 2.0)
+        dest_bus_stops = db.find_nearby_bus_stops(dlat, dlng, 1.0)
+        dest_metro = db.find_nearby_metro_stations(dlat, dlng, 2.0)
 
-        if nearby_bus_stops and nearby_metro:
-            bus_stop = nearby_bus_stops[0]
-            metro_station = nearby_metro[0]
-            walking_to_bus = self.haversine_distance(slat, slng, bus_stop["lat"], bus_stop["lng"])
-            bus_to_metro = self.haversine_distance(bus_stop["lat"], bus_stop["lng"], metro_station["lat"], metro_station["lng"])
-            walking_from_metro = self.haversine_distance(dlat, dlng, metro_station["lat"], metro_station["lng"])
-            bus_fare = db.get_bmtc_ordinary_fare(bus_to_metro)
-            metro_fare = db.get_metro_fare(bus_to_metro)
-            total_fare = (bus_fare + metro_fare) * group_size
+        # Bus → Metro (source bus → interchange metro → dest metro)
+        if bus_stops and dest_metro:
+            for src_bus in bus_stops[:2]:
+                for dst_m in dest_metro[:2]:
+                    walking_to_bus = self.haversine_distance(slat, slng, src_bus["lat"], src_bus["lng"])
+                    bus_dist = self.haversine_distance(src_bus["lat"], src_bus["lng"], dst_m["lat"], dst_m["lng"])
+                    metro_dist = db.get_metro_distance_between(dst_m["name"], dst_m["name"]) or bus_dist * 0.7
+                    walking_from_metro = self.haversine_distance(dlat, dlng, dst_m["lat"], dst_m["lng"])
+                    bus_fare = db.get_bmtc_ordinary_fare(bus_dist)
+                    metro_fare = db.get_metro_fare(metro_dist) * group_size
+                    total_walk = walking_to_bus + walking_from_metro
+                    total_dur = (bus_dist / 25) * 60 + (metro_dist / 35) * 60 + total_walk * 12 + 5
+                    routes.append({
+                        "type": "bus_to_metro",
+                        "total_fare": (bus_fare + metro_fare),
+                        "total_duration_minutes": round(total_dur),
+                        "total_distance_km": round(bus_dist + metro_dist + total_walk, 2),
+                        "total_walking_km": round(total_walk, 2),
+                        "overall_score": 75,
+                        "legs": [
+                            {"from": "Your Location", "to": src_bus["name"], "mode": "walk",
+                             "distance_km": round(walking_to_bus, 2), "duration_minutes": round(walking_to_bus * 12), "fare": 0},
+                            {"from": src_bus["name"], "to": dst_m["name"], "mode": "bus_ordinary",
+                             "distance_km": round(bus_dist, 2), "duration_minutes": round(bus_dist / 25 * 60), "fare": bus_fare * group_size},
+                            {"from": dst_m["name"], "to": dst_m["name"], "mode": "metro", "line": dst_m.get("line"),
+                             "distance_km": round(metro_dist, 2), "duration_minutes": round(metro_dist / 35 * 60), "fare": metro_fare},
+                            {"from": dst_m["name"], "to": "Your Destination", "mode": "walk",
+                             "distance_km": round(walking_from_metro, 2), "duration_minutes": round(walking_from_metro * 12), "fare": 0}
+                        ]
+                    })
 
-            routes.append({
-                "type": "bus_to_metro",
-                "total_fare": total_fare,
-                "total_duration_minutes": (bus_to_metro / 25) * 60 + (bus_to_metro / 35) * 60 + (walking_to_bus + walking_from_metro) * 12 + 5,
-                "total_distance_km": bus_to_metro * 2 + walking_to_bus + walking_from_metro,
-                "total_walking_km": walking_to_bus + walking_from_metro,
-                "overall_score": 70 - (bus_to_metro * 0.3) + 5,
-                "legs": [
-                    {
-                        "from": "Your Location",
-                        "to": bus_stop["name"],
-                        "mode": "walk",
-                        "distance_km": round(walking_to_bus, 2),
-                        "duration_minutes": round(walking_to_bus * 12),
-                        "fare": 0
-                    },
-                    {
-                        "from": bus_stop["name"],
-                        "to": metro_station["name"],
-                        "mode": "bus_ordinary",
-                        "distance_km": round(bus_to_metro, 2),
-                        "duration_minutes": round(bus_to_metro / 25 * 60),
-                        "fare": bus_fare * group_size
-                    },
-                    {
-                        "from": metro_station["name"],
-                        "to": metro_station["name"],
-                        "mode": "metro",
-                        "line": metro_station.get("line"),
-                        "distance_km": round(bus_to_metro, 2),
-                        "duration_minutes": round(bus_to_metro / 35 * 60),
-                        "fare": metro_fare * group_size
-                    },
-                    {
-                        "from": metro_station["name"],
-                        "to": "Your Destination",
-                        "mode": "walk",
-                        "distance_km": round(walking_from_metro, 2),
-                        "duration_minutes": round(walking_from_metro * 12),
-                        "fare": 0
-                    }
-                ]
-            })
-        return routes
+        # Metro → Bus (source metro → bus near dest)
+        if metro_stations and dest_bus_stops:
+            for src_m in metro_stations[:2]:
+                for dst_bus in dest_bus_stops[:2]:
+                    walking_to_metro = self.haversine_distance(slat, slng, src_m["lat"], src_m["lng"])
+                    metro_dist = db.get_metro_distance_between(src_m["name"], src_m["name"]) or dist * 0.5
+                    bus_from_metro = self.haversine_distance(src_m["lat"], src_m["lng"], dst_bus["lat"], dst_bus["lng"])
+                    walking_from_bus = self.haversine_distance(dlat, dlng, dst_bus["lat"], dst_bus["lng"])
+                    metro_fare = db.get_metro_fare(abs(src_m.get("sequence", 0) - dst_bus.get("sequence", 0)) * 1.5) if metro_stations else db.get_metro_fare(dist)
+                    if metro_fare < 11: metro_fare = db.get_metro_fare(dist * 0.6)
+                    bus_fare = db.get_bmtc_ordinary_fare(bus_from_metro)
+                    total_walk = walking_to_metro + walking_from_bus
+                    total_dur = (metro_dist / 35) * 60 + (bus_from_metro / 25) * 60 + total_walk * 12 + 5
+                    routes.append({
+                        "type": "metro_to_bus",
+                        "total_fare": round(metro_fare * group_size + bus_fare * group_size, 2),
+                        "total_duration_minutes": round(total_dur),
+                        "total_distance_km": round(metro_dist + bus_from_metro + total_walk, 2),
+                        "total_walking_km": round(total_walk, 2),
+                        "overall_score": 73,
+                        "legs": [
+                            {"from": "Your Location", "to": src_m["name"], "mode": "walk",
+                             "distance_km": round(walking_to_metro, 2), "duration_minutes": round(walking_to_metro * 12), "fare": 0},
+                            {"from": src_m["name"], "to": src_m["name"], "mode": "metro", "line": src_m.get("line"),
+                             "distance_km": round(metro_dist, 2), "duration_minutes": round(metro_dist / 35 * 60), "fare": metro_fare * group_size},
+                            {"from": src_m["name"], "to": dst_bus["name"], "mode": "bus_ordinary",
+                             "distance_km": round(bus_from_metro, 2), "duration_minutes": round(bus_from_metro / 25 * 60), "fare": bus_fare * group_size},
+                            {"from": dst_bus["name"], "to": "Your Destination", "mode": "walk",
+                             "distance_km": round(walking_from_bus, 2), "duration_minutes": round(walking_from_bus * 12), "fare": 0}
+                        ]
+                    })
+        return routes[:3]
+
+    def _topsis_score(self, route: dict) -> int:
+        fare = route.get("total_fare", 100)
+        duration = route.get("total_duration_minutes", 60)
+        walk = route.get("total_walking_km", 0)
+        distance = route.get("total_distance_km", 10)
+
+        fare_score = max(0, 100 - (fare / 10))
+        time_score = max(0, 100 - (duration / 2))
+        walk_score = max(0, 100 - (walk * 15))
+        comfort = min(100, distance * 3 + (0 if walk < 0.5 else 20))
+
+        final_score = int(fare_score * 0.3 + time_score * 0.35 + walk_score * 0.15 + comfort * 0.2)
+        return max(10, min(99, final_score))
 
     async def get_osrm_route(self, slat, slng, dlat, dlng):
         try:

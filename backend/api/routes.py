@@ -130,12 +130,35 @@ async def plan_route(request: ATobRequest):
                 }]
             })
 
-    all_routes.sort(key=lambda x: x["overall_score"], reverse=True)
+    weather = await llm_agent.get_weather_impact()
+    is_rainy = "rain" in (weather.get("condition", "") or "").lower()
+    from datetime import datetime
+    current_hour = datetime.now().hour
+    is_night = current_hour < 6 or current_hour > 20
+
+    for r in all_routes:
+        base_score = r.get("overall_score", 75)
+        fare = r.get("total_fare", 100)
+        walk = r.get("total_walking_km", 0)
+        mode_type = r.get("type", "")
+
+        if is_rainy:
+            if walk > 1: base_score -= 15
+            if mode_type in ("walk", "bike"): base_score -= 20
+            if mode_type in ("car", "cab"): base_score += 5
+        if is_night:
+            if walk > 1.5: base_score -= 10
+            if mode_type in ("bus_ordinary",): base_score -= 8
+            if mode_type in ("cab", "car"): base_score += 8
+        if request.group_size >= 4 and mode_type in ("car", "cab", "bus_ac_vajra"):
+            base_score += 10
+        r["overall_score"] = max(10, min(99, base_score))
+
+    all_routes.sort(key=lambda x: (x["overall_score"], -x.get("total_fare", 999)), reverse=True)
 
     travel_recs = await llm_agent.get_travel_recs(
         source_name, dest_name, request.group_size, request.budget
     )
-    weather = await llm_agent.get_weather_impact()
 
     return {
         "status": "success",
