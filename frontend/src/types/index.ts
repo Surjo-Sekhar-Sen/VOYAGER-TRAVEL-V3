@@ -134,6 +134,11 @@ export interface MiniPathTransitOption {
   distance_km: number
   duration_minutes: number
   fare: number
+  per_person?: number
+  label?: string
+  icon?: string
+  group_capacity?: number
+  path?: number[][]
   stop?: any
   station?: any
   instructions?: string
@@ -151,7 +156,12 @@ export interface MiniPathTransitOption {
 
 export interface MiniPathOptions {
   source_walk_options: MiniPathTransitOption[]
+  direct_ride_options?: MiniPathTransitOption[]
   source_to_transit: {
+    bus: MiniPathTransitOption[]
+    metro: MiniPathTransitOption[]
+  }
+  transit_ride_options?: {
     bus: MiniPathTransitOption[]
     metro: MiniPathTransitOption[]
   }
@@ -177,6 +187,43 @@ export interface BuiltRoute {
   totalDistance: number
 }
 
+export interface SegmentStepOption {
+  mode: string
+  label?: string
+  icon?: string
+  from: string
+  to: string
+  distance_km: number
+  duration_minutes: number
+  fare: number
+  per_person?: number
+  group_capacity?: number
+  path?: number[][]
+  arrives_at_stop?: boolean
+  from_lat?: number
+  from_lng?: number
+  to_lat?: number
+  to_lng?: number
+}
+
+export interface SegmentStopInfo {
+  name: string
+  lat: number
+  lng: number
+  type: string
+}
+
+export interface SegmentStepData {
+  from: { lat: number; lng: number; name: string }
+  dest: { lat: number; lng: number; name: string }
+  direct_options: SegmentStepOption[]
+  via_stops: {
+    stop: SegmentStopInfo
+    reach_options: SegmentStepOption[]
+    from_stop_options: SegmentStepOption[]
+  }[]
+}
+
 export interface NewsItem {
   title: string
   description: string
@@ -188,7 +235,7 @@ export interface NewsItem {
 }
 
 export interface MapRouteGeometry {
-  type: 'route' | 'segment' | 'hover'
+  type: 'route' | 'segment' | 'hover' | 'stop'
   coordinates: [number, number][]  // [lat, lng] pairs for map
   color: string
   weight?: number

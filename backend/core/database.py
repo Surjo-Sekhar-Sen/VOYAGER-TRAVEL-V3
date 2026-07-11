@@ -198,6 +198,31 @@ class TransitDatabase:
         results.sort(key=lambda x: x["distance_km"])
         return results
 
+    def get_metro_line_path(self, from_name: str, to_name: str) -> list | None:
+        from_stn = None
+        to_stn = None
+        for s in self.metro_stations:
+            if s["name"].lower().strip() == from_name.lower().strip():
+                from_stn = s
+            if s["name"].lower().strip() == to_name.lower().strip():
+                to_stn = s
+        if not from_stn or not to_stn or from_stn.get("line") != to_stn.get("line"):
+            return None
+        line_name = from_stn["line"]
+        line_stations = self.metro_lines.get(line_name, [])
+        seq_from = from_stn["sequence"]
+        seq_to = to_stn["sequence"]
+        step = 1 if seq_to > seq_from else -1
+        coords = []
+        for s in line_stations:
+            if step == 1 and from_stn["sequence"] <= s["sequence"] <= to_stn["sequence"]:
+                coords.append([s["lat"], s["lng"]])
+            elif step == -1 and to_stn["sequence"] <= s["sequence"] <= from_stn["sequence"]:
+                coords.append([s["lat"], s["lng"]])
+        if step == -1:
+            coords.reverse()
+        return coords if len(coords) >= 2 else None
+
     def get_kia_route_for_stop(self, stop_name: str) -> list:
         routes_for_stop = []
         for route_id, route_data in self.kia_routes.items():

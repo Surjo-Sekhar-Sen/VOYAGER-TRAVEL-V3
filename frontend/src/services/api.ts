@@ -4,7 +4,7 @@ import type { PlaceResult } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 60000,
 })
 
 export async function searchPlaces(q: string, lat?: number, lng?: number, signal?: AbortSignal): Promise<SearchResponse> {
@@ -82,6 +82,21 @@ export async function enrichPlace(place: PlaceResult): Promise<EnrichSingleRespo
     place_type: place.place_type,
     address: place.address,
   })
+  return data
+}
+
+export async function getSegmentStep(
+  fromLat: number, fromLng: number, fromName: string,
+  destLat: number, destLng: number, destName: string,
+  groupSize: number = 1, budget?: number
+): Promise<{ status: string; step: any }> {
+  const params: any = {
+    from_lat: fromLat, from_lng: fromLng, from_name: fromName,
+    dest_lat: destLat, dest_lng: destLng, dest_name: destName,
+    group_size: groupSize,
+  }
+  if (budget !== undefined) params.budget = budget
+  const { data } = await api.get('/routes/segment-step', { params })
   return data
 }
 

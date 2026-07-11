@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { PlaceResult, MapRouteGeometry, NewsItem } from '../types'
 
@@ -159,22 +159,58 @@ export default function MapView({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
-      {/* Route polylines */}
+      {/* Route polylines - white outline */}
       {routeGeometry?.map((rg, i) => {
         const coords = rg.coordinates.map(c => [c[0], c[1]] as [number, number])
+        const isMain = rg.type === 'route'
+        const isWalk = rg.label?.toLowerCase().includes('walk') || rg.dashArray === '8, 6'
+        const w = rg.weight || (rg.type === 'hover' ? 7 : isMain ? 6 : 4)
         return (
           <Polyline
-            key={`route-${i}`}
+            key={`route-outline-${i}`}
             positions={coords}
             pathOptions={{
-              color: rg.color,
-              weight: rg.weight || (rg.type === 'hover' ? 6 : 4),
-              opacity: rg.type === 'hover' ? 0.9 : 0.7,
-              dashArray: rg.dashArray,
+              color: '#ffffff',
+              weight: w + (isMain ? 4 : 2),
+              opacity: 1,
+              lineCap: 'round',
+              lineJoin: 'round',
             }}
           />
         )
       })}
+      {/* Route polylines - colored fill (solid for transit, dashed for walking) */}
+      {routeGeometry?.map((rg, i) => {
+        const coords = rg.coordinates.map(c => [c[0], c[1]] as [number, number])
+        const isMain = rg.type === 'route'
+        const isWalk = rg.label?.toLowerCase().includes('walk') || rg.dashArray === '8, 6'
+        const w = rg.weight || (rg.type === 'hover' ? 7 : isMain ? 6 : 4)
+        return (
+          <Polyline
+            key={`route-color-${i}`}
+            positions={coords}
+            pathOptions={{
+              color: rg.color,
+              weight: w,
+              opacity: rg.type === 'hover' ? 0.95 : 0.85,
+              dashArray: isWalk ? '8, 6' : rg.dashArray,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }}
+          />
+        )
+      })}
+
+      {/* Transit stop markers */}
+      {routeGeometry?.filter(rg => rg.type === 'stop').map((rg, i) => (
+        <CircleMarker key={`stop-${i}`}
+          center={[rg.coordinates[0][0], rg.coordinates[0][1]]}
+          radius={6}
+          pathOptions={{ color: '#22c55e', fillColor: '#22c55e33', fillOpacity: 0.6, weight: 2 }}
+        >
+          {rg.label && <Popup>{rg.label}</Popup>}
+        </CircleMarker>
+      ))}
 
       {/* News affected-area markers */}
       {newsItems?.map((item, i) => {

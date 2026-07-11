@@ -1,4 +1,4 @@
-import math, json, csv, os
+import math, json, csv, os, asyncio
 from fastapi import APIRouter, Query
 from backend.models.transit import ATobRequest
 from backend.services.transit_service import transit_service
@@ -82,10 +82,20 @@ async def plan_route(request: ATobRequest):
         for i in range(len(points) - 1):
             a, b = points[i], points[i + 1]
             seg_transit = transit_service.get_route_legs_public(a["lat"], a["lng"], b["lat"], b["lng"], request.budget, request.group_size)
+            async def enrich_seg():
+                tasks = [transit_service._add_leg_paths(r) for r in seg_transit]
+                await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(enrich_seg(), timeout=15.0)
+            except:
+                pass
             seg_driving = await transit_service.get_driving_route(a["lat"], a["lng"], b["lat"], b["lng"])
             seg_driving_list = []
             if seg_driving:
                 fuel = _estimate_fuel_cost(seg_driving.get("distance_km", 0))
+                driving_path = None
+                if seg_driving.get("geometry"):
+                    driving_path = [[c[1], c[0]] for c in seg_driving["geometry"]["coordinates"]]
                 seg_driving_list.append({
                     "type": "car", "total_fare": fuel, "total_duration_minutes": seg_driving["duration_minutes"],
                     "total_distance_km": seg_driving["distance_km"], "total_walking_km": 0, "overall_score": 85,
@@ -94,13 +104,17 @@ async def plan_route(request: ATobRequest):
                         "to": b.get("name", f"{b['lat']:.4f},{b['lng']:.4f}"),
                         "mode": "car", "distance_km": seg_driving["distance_km"],
                         "duration_minutes": seg_driving["duration_minutes"], "fare": fuel,
-                        "instructions": f"Drive {seg_driving['distance_km']:.1f}km - ₹{fuel}"
+                        "instructions": f"Drive {seg_driving['distance_km']:.1f}km - ₹{fuel}",
+                        "path": driving_path,
                     }]
                 })
             segment_routes.append({"transit": seg_transit, "driving": seg_driving_list})
 
         all_routes = _combine_multi_stop_routes(segment_routes)
-        weather = await llm_agent.get_weather_impact()
+        try:
+            weather = await asyncio.wait_for(llm_agent.get_weather_impact(), timeout=5.0)
+        except:
+            weather = {}
         return _sanitize({
             "status": "success", "multi_stop": True,
             "source": {"lat": request.source_lat, "lng": request.source_lng},
@@ -148,7 +162,8 @@ async def plan_route(request: ATobRequest):
                     "distance_km": driving["distance_km"],
                     "duration_minutes": driving["duration_minutes"],
                     "fare": fuel_cost,
-                    "instructions": f"Drive {driving['distance_km']:.1f}km - fuel cost approx ₹{fuel_cost}"
+                    "instructions": f"Drive {driving['distance_km']:.1f}km - fuel cost approx ₹{fuel_cost}",
+                    "path": [[c[1], c[0]] for c in driving["geometry"]["coordinates"]] if driving.get("geometry") else None,
                 }]
             }]
         }
@@ -188,6 +203,15 @@ async def plan_route(request: ATobRequest):
         request.budget, request.group_size
     )
 
+    # Parallel path enrichment for all public routes
+    async def enrich_all():
+        tasks = [transit_service._add_leg_paths(r) for r in public_routes]
+        await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await asyncio.wait_for(enrich_all(), timeout=30.0)
+    except:
+        pass
+
     driving = await transit_service.get_driving_route(
         request.source_lat, request.source_lng,
         request.dest_lat, request.dest_lng
@@ -215,7 +239,8 @@ async def plan_route(request: ATobRequest):
                 "distance_km": driving["distance_km"],
                 "duration_minutes": driving["duration_minutes"],
                 "fare": estimated_fuel_cost,
-                "instructions": f"Drive - fuel: ₹{estimated_fuel_cost}"
+                "instructions": f"Drive - fuel: ₹{estimated_fuel_cost}",
+                "path": [[c[1], c[0]] for c in driving["geometry"]["coordinates"]] if driving.get("geometry") else None,
             }]
         })
 
@@ -241,7 +266,10 @@ async def plan_route(request: ATobRequest):
                 }]
             })
 
-    weather = await llm_agent.get_weather_impact()
+    try:
+        weather = await asyncio.wait_for(llm_agent.get_weather_impact(), timeout=5.0)
+    except:
+        weather = {}
     is_rainy = "rain" in (weather.get("condition", "") or "").lower()
     from datetime import datetime
     current_hour = datetime.now().hour
@@ -328,7 +356,97 @@ async def get_mini_path_options(
     options = transit_service.get_mini_path_options(
         source_lat, source_lng, dest_lat, dest_lng, group_size
     )
+    # Add paths to mini-path options (walking for walk modes, driving for cab/auto, driving for transit rides)
+    all_opts = []
+    for key in ("source_walk_options", "direct_ride_options"):
+        for opt in options.get(key, []):
+            all_opts.append(opt)
+    for key in ("source_to_transit", "transit_ride_options"):
+        if isinstance(options.get(key), dict):
+            for mode_list in options.get(key, {}).values():
+                all_opts.extend(mode_list)
+        elif isinstance(options.get(key), list):
+            all_opts.extend(options.get(key))
+    for key in ("transit_to_dest",):
+        if isinstance(options.get(key), dict):
+            for mode_list in options.get(key, {}).values():
+                all_opts.extend(mode_list)
+    for opt in all_opts:
+        f_lat, f_lng = opt.get("from_lat"), opt.get("from_lng")
+        t_lat, t_lng = opt.get("to_lat"), opt.get("to_lng")
+        if f_lat and f_lng and t_lat and t_lng:
+            profile = "driving" if opt.get("mode") in ("cab", "auto", "cab_xl", "cab_women", "cab_pet", "bike") else "walking"
+            path = await transit_service.get_osrm_path_between(f_lat, f_lng, t_lat, t_lng, profile)
+            if path:
+                opt["path"] = path
     return _sanitize({"status": "success", "options": options})
+
+@router.get("/segment-step")
+async def get_segment_step(
+    from_lat: float = Query(...), from_lng: float = Query(...),
+    from_name: str = Query("Your Location"),
+    dest_lat: float = Query(...), dest_lng: float = Query(...),
+    dest_name: str = Query("Destination"),
+    group_size: int = Query(1), budget: float = Query(None),
+):
+    step = transit_service.get_segment_step_options(
+        from_lat, from_lng, from_name, dest_lat, dest_lng, dest_name, group_size, budget
+    )
+    # Add OSRM paths for all options
+    tasks = []
+    for opt in step.get("direct_options", []):
+        f_lat, f_lng = opt.get("from_lat"), opt.get("from_lng")
+        t_lat, t_lng = opt.get("to_lat"), opt.get("to_lng")
+        if f_lat and f_lng and t_lat and t_lng:
+            profile = "driving" if opt.get("mode") in ("cab","cab_xl","cab_women","cab_pet","auto","bike") else "walking"
+            tasks.append(transit_service.get_osrm_path_between(f_lat, f_lng, t_lat, t_lng, profile))
+        else:
+            tasks.append(None)
+        opt["_path_idx"] = len(tasks) - 1
+    for vs in step.get("via_stops", []):
+        for opt in vs.get("reach_options", []):
+            f_lat, f_lng = opt.get("from_lat"), opt.get("from_lng")
+            t_lat, t_lng = opt.get("to_lat"), opt.get("to_lng")
+            if f_lat and f_lng and t_lat and t_lng:
+                profile = "driving" if opt.get("mode") in ("cab","cab_xl","cab_women","cab_pet","auto","bike") else "walking"
+                tasks.append(transit_service.get_osrm_path_between(f_lat, f_lng, t_lat, t_lng, profile))
+            else:
+                tasks.append(None)
+            opt["_path_idx"] = len(tasks) - 1
+        for opt in vs.get("from_stop_options", []):
+            f_lat, f_lng = opt.get("from_lat"), opt.get("from_lng")
+            t_lat, t_lng = opt.get("to_lat"), opt.get("to_lng")
+            if f_lat and f_lng and t_lat and t_lng:
+                profile = "driving" if opt.get("mode") in ("cab","cab_xl","cab_women","cab_pet","auto","bike") else "walking"
+                tasks.append(transit_service.get_osrm_path_between(f_lat, f_lng, t_lat, t_lng, profile))
+            else:
+                tasks.append(None)
+            opt["_path_idx"] = len(tasks) - 1
+    results = await asyncio.gather(*[t for t in tasks if t], return_exceptions=True)
+    res_idx = 0
+    for opt in step.get("direct_options", []):
+        pi = opt.pop("_path_idx", None)
+        if pi is not None:
+            r = results[res_idx] if res_idx < len(results) else None
+            if r and not isinstance(r, Exception) and r:
+                opt["path"] = r
+            res_idx += 1
+    for vs in step.get("via_stops", []):
+        for opt in vs.get("reach_options", []):
+            pi = opt.pop("_path_idx", None)
+            if pi is not None:
+                r = results[res_idx] if res_idx < len(results) else None
+                if r and not isinstance(r, Exception) and r:
+                    opt["path"] = r
+                res_idx += 1
+        for opt in vs.get("from_stop_options", []):
+            pi = opt.pop("_path_idx", None)
+            if pi is not None:
+                r = results[res_idx] if res_idx < len(results) else None
+                if r and not isinstance(r, Exception) and r:
+                    opt["path"] = r
+                res_idx += 1
+    return _sanitize({"status": "success", "step": step})
 
 @router.get("/news")
 async def get_travel_news(
