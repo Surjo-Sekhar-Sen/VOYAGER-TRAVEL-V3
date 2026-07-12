@@ -26,6 +26,9 @@ app.include_router(routes.router)
 @app.on_event("startup")
 async def startup():
     db.initialize()
+    # Preload GTFS data synchronously (takes ~40s once)
+    from backend.services.transit_service import _ensure_gtfs
+    _ensure_gtfs()
 
 @app.get("/api/n8n-status")
 async def n8n_status():

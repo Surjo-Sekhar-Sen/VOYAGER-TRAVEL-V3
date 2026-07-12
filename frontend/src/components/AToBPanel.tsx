@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import type { RouteOption, RidePrice, PlaceResult, RouteLeg, NewsItem, MapRouteGeometry, SegmentStepData, SegmentStepOption } from '../types'
-import { planRoute, getRidePrices, searchPlaces, getSegmentStep } from '../services/api'
+import type { RouteOption, RidePrice, PlaceResult, RouteLeg, NewsItem, MapRouteGeometry } from '../types'
+import { planRoute, getRidePrices, searchPlaces } from '../services/api'
 import { getModeIcon, getModeLabel, formatDuration, formatRupees, getScoreColor, getScoreLabel } from '../utils/helpers'
 
 function _distKm(a: [number, number], b: [number, number]): number {
@@ -19,15 +19,12 @@ interface AToBPanelProps {
   onRouteGeometry: (geometry: MapRouteGeometry[]) => void
   onNewsUpdate: (news: NewsItem[]) => void
   onWaypointsChange?: (waypoints: { lat: number; lng: number; query: string }[]) => void
+  onOpenSegmentPanel?: (sourceName: string, destName: string, groupSize: number, budget?: number) => void
 }
-
-const SEGMENT_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#8b5cf6', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899']
-
-type RouterView = 'direct' | 'segment'
 
 export default function AToBPanel({
   sourceLocation, destLocation, onSourceLocationChange, onDestLocationChange, onMapCenterChange, mapRef, onRouteGeometry, onNewsUpdate,
-  onWaypointsChange,
+  onWaypointsChange, onOpenSegmentPanel,
 }: AToBPanelProps) {
   const [sourceQuery, setSourceQuery] = useState('')
   const [destQuery, setDestQuery] = useState('')
@@ -41,7 +38,6 @@ export default function AToBPanel({
   const [loading, setLoading] = useState(false)
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null)
   const [travelMode, setTravelMode] = useState<'public' | 'personal' | 'walking'>('public')
-  const [routerView, setRouterView] = useState<RouterView>('direct')
   const [prefs, setPrefs] = useState({ budget: undefined as number | undefined, groupSize: 1 })
   const [insights, setInsights] = useState('')
   const [ridePrices, setRidePrices] = useState<RidePrice[]>([])
@@ -49,26 +45,11 @@ export default function AToBPanel({
   const [recommendations, setRecommendations] = useState<any>(null)
   const [weather, setWeather] = useState<any>(null)
 
-  // Dynamic segment builder state
-  const [segmentStep, setSegmentStep] = useState<SegmentStepData | null>(null)
-  const [segmentPath, setSegmentPath] = useState<SegmentStepOption[]>([])
-  const [segmentLoading, setSegmentLoading] = useState(false)
-  const [hoveredSegmentOption, setHoveredSegmentOption] = useState<SegmentStepOption | null>(null)
-
   const planRef = useRef<() => void>(() => {})
-  const segmentBuildingRef = useRef(false)
   const srcAbortRef = useRef<AbortController | null>(null)
   const dstAbortRef = useRef<AbortController | null>(null)
   const wpAbortRef = useRef<AbortController | null>(null)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Pre-load segment options when switching to segment view (only if not user-initiated)
-  useEffect(() => {
-    if (routerView === 'segment' && sourceLocation && destLocation && !segmentStep && !segmentPath.length && !segmentLoading && !segmentBuildingRef.current) {
-      handleStartSegmentBuilding()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routerView, sourceLocation, destLocation])
 
   // Emit waypoint locations to parent for map markers
   useEffect(() => {
@@ -103,6 +84,11 @@ export default function AToBPanel({
     return () => { if (newsIntervalRef.current) clearInterval(newsIntervalRef.current) }
   }, [])
 
+  const handleOpenSegmentPanel = useCallback(() => {
+    if (!sourceLocation || !destLocation || !onOpenSegmentPanel) return
+    onOpenSegmentPanel(sourceQuery || 'Your Location', destQuery || 'Destination', prefs.groupSize, prefs.budget)
+  }, [sourceLocation, destLocation, sourceQuery, destQuery, prefs, onOpenSegmentPanel])
+
   // Emit route geometry
   useEffect(() => {
     const geo: MapRouteGeometry[] = []
@@ -119,14 +105,13 @@ export default function AToBPanel({
         // Build continuous path from leg path data (real road geometry) or fall back to leg coordinates
         const pathCoords: [number, number][] = []
         let hasRealPath = false
-        route.legs.forEach((leg, legIdx) => {
+        route.legs.forEach((leg) => {
           const legPath = (leg as any).path
           if (legPath && legPath.length >= 2) {
             hasRealPath = true
             if (pathCoords.length === 0) {
               pathCoords.push(...legPath)
             } else {
-              // Skip first coord of each subsequent leg to avoid duplicate with previous leg's last coord
               const skip = _distKm(pathCoords[pathCoords.length - 1], legPath[0]) < 0.05 ? 1 : 0
               pathCoords.push(...legPath.slice(skip))
             }
@@ -161,7 +146,7 @@ export default function AToBPanel({
         metro: '#22c55e', metro_interchange: '#059669',
         car: '#f97316', cab: '#f59e0b', driving: '#f97316',
       }
-      route.legs?.forEach((leg, idx) => {
+      route.legs?.forEach((leg) => {
         const legPath = (leg as any).path
         const color = modeColors[leg.mode] || '#64748b'
         if (legPath && legPath.length >= 2) {
@@ -176,101 +161,8 @@ export default function AToBPanel({
       })
     }
 
-    if (hoveredSegmentOption) {
-      const opt = hoveredSegmentOption
-      const hoverPath = (opt as any).path
-      if (hoverPath && hoverPath.length >= 2) {
-        geo.push({ type: 'hover', coordinates: hoverPath as [number, number][], color: '#fbbf24', weight: 6, label: `${getModeLabel(opt.mode)}: ${opt.distance_km}km` })
-      } else {
-        const fLat = opt.from_lat || sourceLocation?.[0]
-        const fLng = opt.from_lng || sourceLocation?.[1]
-        const tLat = opt.to_lat || destLocation?.[0]
-        const tLng = opt.to_lng || destLocation?.[1]
-        if (fLat && fLng && tLat && tLng) {
-          geo.push({ type: 'hover', coordinates: [[fLat, fLng], [tLat, tLng]], color: '#fbbf24', weight: 6, label: `${getModeLabel(opt.mode)}: ${opt.distance_km}km` })
-        }
-      }
-    }
-
-    // Segment path segments
-    segmentPath.forEach((opt, idx) => {
-      const bldPath = opt.path
-      if (bldPath && bldPath.length >= 2) {
-        geo.push({ type: 'segment', coordinates: bldPath as [number, number][], color: SEGMENT_COLORS[idx % SEGMENT_COLORS.length], weight: 4, label: opt.mode })
-      } else {
-        const fLat = opt.from_lat
-        const fLng = opt.from_lng
-        const tLat = opt.to_lat
-        const tLng = opt.to_lng
-        if (fLat && fLng && tLat && tLng) {
-          geo.push({ type: 'segment', coordinates: [[fLat, fLng], [tLat, tLng]], color: SEGMENT_COLORS[idx % SEGMENT_COLORS.length], weight: 4, label: opt.mode })
-        }
-      }
-    })
-
-    // Transit stop markers in segment view
-    if (segmentStep) {
-      segmentStep.via_stops.forEach(vs => {
-        geo.push({
-          type: 'stop',
-          coordinates: [[vs.stop.lat, vs.stop.lng]] as [number, number][],
-          color: vs.stop.type === 'metro' ? '#22c55e' : '#3b82f6',
-          label: `${vs.stop.type === 'metro' ? '🚇' : '🚌'} ${vs.stop.name}`,
-        })
-      })
-    }
-
     onRouteGeometry(geo)
-  }, [selectedRoute, routes, sourceLocation, destLocation, hoveredSegmentOption, segmentPath, segmentStep, onRouteGeometry])
-
-  // Dynamic segment step: fetch all options from a given location toward destination
-  const fetchStepFrom = useCallback(async (fromLat: number, fromLng: number, fromName: string) => {
-    if (!destLocation || !destQuery) return
-    setSegmentLoading(true)
-    try {
-      const res = await getSegmentStep(
-        fromLat, fromLng, fromName,
-        destLocation[0], destLocation[1], destQuery || 'Destination',
-        prefs.groupSize, prefs.budget
-      )
-      if (res.step) setSegmentStep(res.step)
-    } catch { /* ignore */ }
-    setSegmentLoading(false)
-  }, [destLocation, destQuery, prefs.groupSize, prefs.budget])
-
-  // Start building from source
-  const handleStartSegmentBuilding = useCallback(() => {
-    if (!sourceLocation || !destLocation) return
-    segmentBuildingRef.current = true
-    setSegmentPath([])
-    setSegmentStep(null)
-    setRouterView('segment')
-    fetchStepFrom(sourceLocation[0], sourceLocation[1], sourceQuery || 'Your Location')
-    // Reset ref after a frame so the useEffect doesn't double-call
-    setTimeout(() => { segmentBuildingRef.current = false }, 100)
-  }, [sourceLocation, destLocation, sourceQuery, fetchStepFrom])
-
-  // User picks an option (direct or via stop)
-  const handlePickSegmentOption = useCallback((option: SegmentStepOption) => {
-    setSegmentPath(prev => [...prev, option])
-    setHoveredSegmentOption(null)
-    // If option arrives at a transit stop, load next step from that stop
-    // (arrives_at_stop is true for transit rides, false for direct-to-dest options)
-    if (option.arrives_at_stop && option.to_lat && option.to_lng) {
-      fetchStepFrom(option.to_lat, option.to_lng, option.to)
-    } else {
-      // Direct to destination → done building
-      setSegmentStep(null)
-    }
-  }, [fetchStepFrom])
-
-  // Compute built route summary
-  const builtRoute = segmentPath.length > 0 ? {
-    segments: segmentPath,
-    totalFare: segmentPath.reduce((sum, s) => sum + (s.fare || 0), 0),
-    totalDuration: segmentPath.reduce((sum, s) => sum + (s.duration_minutes || 0), 0),
-    totalDistance: segmentPath.reduce((sum, s) => sum + (s.distance_km || 0), 0),
-  } : null
+  }, [selectedRoute, routes, sourceLocation, destLocation, onRouteGeometry])
 
 
 
@@ -360,7 +252,6 @@ export default function AToBPanel({
     setSelectedRoute(null)
     setRidePrices([])
     setRidePricesLoading(true)
-    setHoveredSegmentOption(null)
 
     try {
       const mode = travelMode === 'walking' ? 'walking' : travelMode === 'personal' ? 'personal' : 'default'
@@ -397,7 +288,7 @@ export default function AToBPanel({
       setLoading(false)
       setRidePricesLoading(false)
     }
-  }, [sourceLocation, destLocation, sourceQuery, destQuery, travelMode, prefs, mapRef, startNewsFetch, waypoints])
+  }, [sourceLocation, destLocation, sourceQuery, destQuery, travelMode, prefs, mapRef, startNewsFetch, waypoints, handleOpenSegmentPanel])
   planRef.current = handlePlanRoute
 
   const handleUseCurrentLocation = useCallback(() => {
@@ -414,9 +305,6 @@ export default function AToBPanel({
     }
   }, [onSourceLocationChange, onMapCenterChange])
 
-  const handleHoverSegmentOption = useCallback((option: SegmentStepOption | null) => {
-    setHoveredSegmentOption(option)
-  }, [])
   const legColors: Record<string, string> = {
     walk: '#94a3b8', walk_to_bus: '#94a3b8', walk_to_metro: '#94a3b8',
     walk_from_bus: '#94a3b8', walk_from_metro: '#94a3b8',
@@ -538,43 +426,26 @@ export default function AToBPanel({
           onClick={() => setTravelMode('walking')}>🚶 Walk</button>
       </div>
 
-      {/* Direct / Segment sub-tabs — only when Public mode */}
+      {/* Segment Builder button */}
       {travelMode === 'public' && (
-        <div style={{ display: 'flex', gap: 0, marginTop: 6 }}>
-          <button onClick={() => setRouterView('direct')}
-            style={{
-              flex: 1, padding: '6px', fontSize: 11, fontWeight: 600,
-              borderRadius: '6px 0 0 6px', cursor: 'pointer',
-              background: routerView === 'direct' ? '#1e3a5f' : '#0f172a',
-              color: routerView === 'direct' ? '#60a5fa' : '#64748b',
-              border: routerView === 'direct' ? '1px solid #3b82f6' : '1px solid #334155',
-            }}>
-            🗺️ Direct Routes
-          </button>
-          <button onClick={handleStartSegmentBuilding}
-            style={{
-              flex: 1, padding: '6px', fontSize: 11, fontWeight: 600,
-              borderRadius: '0 6px 6px 0', cursor: 'pointer',
-              background: routerView === 'segment' ? '#1e3a5f' : '#0f172a',
-              color: routerView === 'segment' ? '#60a5fa' : '#64748b',
-              border: routerView === 'segment' ? '1px solid #3b82f6' : '1px solid #334155',
-            }}>
-            🔧 Segment Builder
-          </button>
-        </div>
-      )}
-
-      {/* Find Routes button — only for Direct view */}
-      {routerView === 'direct' && (
-        <button className="go-btn" onClick={handlePlanRoute}
-          disabled={!sourceLocation || !destLocation || loading}
-          style={{ opacity: (!sourceLocation || !destLocation || loading) ? 0.5 : 1 }}>
-          {loading ? '⏳ Analysing Routes...' : '🚀 Find Routes'}
+        <button onClick={handleOpenSegmentPanel} style={{
+          width: '100%', padding: '10px', marginTop: 8,
+          background: '#1e3a5f', border: '1px solid #3b82f6',
+          color: '#60a5fa', borderRadius: 8, cursor: 'pointer',
+          fontSize: 13, fontWeight: 600,
+        }}>
+          🔧 Open Segment Builder
         </button>
       )}
 
+      <button className="go-btn" onClick={handlePlanRoute}
+        disabled={!sourceLocation || !destLocation || loading}
+        style={{ opacity: (!sourceLocation || !destLocation || loading) ? 0.5 : 1 }}>
+        {loading ? '⏳ Analysing Routes...' : '🚀 Find Routes'}
+      </button>
+
       {/* AI Recommendation */}
-      {recommendations && routerView === 'direct' && (
+      {recommendations && (
         <div style={{ marginTop: 12, padding: 12, background: '#1e3a5f', borderRadius: 10, border: '1px solid #3b82f6' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#60a5fa', marginBottom: 6 }}>🤖 AI RECOMMENDATION</div>
           <div style={{ fontSize: 13, color: '#e2e8f0', marginBottom: 4 }}>
@@ -593,19 +464,19 @@ export default function AToBPanel({
       )}
 
       {/* Weather + Insights */}
-      {weather && routerView === 'direct' && (
+      {weather && (
         <div style={{ marginTop: 8, padding: '6px 10px', background: '#0f172a', borderRadius: 8, fontSize: 11, color: '#94a3b8', display: 'flex', gap: 12 }}>
           <span>🌤️ {weather.condition} | {weather.temperature_celsius}°C</span>
           {weather.traffic_alert && <span>🚦 {weather.traffic_alert}</span>}
           {weather.recommendation && <span>💬 {weather.recommendation}</span>}
         </div>
       )}
-      {insights && routerView === 'direct' && (
+      {insights && (
         <div className="insights-box" style={{ marginTop: 8 }}>💡 {insights}</div>
       )}
 
       {/* Ride / Cab Prices */}
-      {ridePrices.length > 0 && routerView === 'direct' && (
+      {ridePrices.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <h3 style={{ fontSize: 13, marginBottom: 8, color: '#94a3b8' }}>🚗 Ride / Cab Price Estimates</h3>
           {ridePrices.map((rp, i) => (
@@ -621,159 +492,22 @@ export default function AToBPanel({
       )}
       {ridePricesLoading && <div className="loading" style={{ marginTop: 12 }}>Fetching ride prices...</div>}
 
-      {/* ===== DIRECT VIEW ===== */}
-      {routerView === 'direct' && routes.length > 0 && (
+      {/* Routes */}
+      {routes.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <h3 style={{ fontSize: 13, color: '#94a3b8', margin: 0 }}>🗺️ {routes.length} routes found</h3>
-            <button onClick={handleStartSegmentBuilding} style={{ background: '#1e3a5f', border: '1px solid #3b82f6', color: '#60a5fa', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>
-              🔧 Segment Builder
-            </button>
+            {travelMode === 'public' && (
+              <button onClick={handleOpenSegmentPanel} style={{ background: '#1e3a5f', border: '1px solid #3b82f6', color: '#60a5fa', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>
+                🔧 Segment Builder
+              </button>
+            )}
           </div>
           {routes.map((route, i) => (
             <RouteCard key={i} route={route} isSelected={selectedRoute === i} onSelect={() => setSelectedRoute(i)} isRecommended={i === 0} rank={i + 1}
               getLegColor={(m) => legColors[m] || '#64748b'} getModeIcon={getModeIcon} getModeLabel={getModeLabel}
               formatDuration={formatDuration} formatRupees={formatRupees} getScoreColor={getScoreColor} getScoreLabel={getScoreLabel} />
           ))}
-        </div>
-      )}
-
-      {/* ===== SEGMENT VIEW ===== */}
-      {routerView === 'segment' && (
-        <div style={{ marginTop: 12 }}>
-          {/* Already built segments */}
-          {segmentPath.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Your path so far:</div>
-              {segmentPath.map((opt, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#e2e8f0', padding: '2px 0' }}>
-                  <span style={{ color: SEGMENT_COLORS[i % SEGMENT_COLORS.length] }}>●</span>
-                  <span>{opt.icon || getModeIcon(opt.mode)}</span>
-                  <span>{opt.label || getModeLabel(opt.mode)}</span>
-                  <span style={{ color: '#94a3b8' }}>→</span>
-                  <span style={{ color: '#94a3b8' }}>{opt.to.slice(0, 18)}</span>
-                  <span style={{ color: '#fbbf24', marginLeft: 'auto' }}>{formatRupees(opt.fare)}</span>
-                </div>
-              ))}
-              {builtRoute && !segmentStep && (
-                <div style={{ marginTop: 6, padding: 8, background: '#0f2d1a', borderRadius: 8, border: '1px solid #22c55e' }}>
-                  <div style={{ fontSize: 11, color: '#22c55e', fontWeight: 600, marginBottom: 4 }}>✅ Route Complete!</div>
-                  <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#94a3b8' }}>
-                    <span>💰 <strong style={{ color: '#fbbf24' }}>{formatRupees(builtRoute.totalFare)}</strong></span>
-                    <span>⏱️ <strong>{formatDuration(builtRoute.totalDuration)}</strong></span>
-                    <span>📏 <strong>{builtRoute.totalDistance.toFixed(1)}km</strong></span>
-                  </div>
-                  <button style={{ marginTop: 6, width: '100%', padding: '8px', background: '#22c55e', border: 'none', borderRadius: 6, color: '#052e16', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
-                    ✅ Confirm Route
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Current step — options to choose from */}
-          {segmentStep && !segmentLoading && (
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', marginBottom: 6 }}>
-                📍 From: {segmentStep.from.name}
-              </div>
-
-              {/* Direct options (go straight to destination) */}
-              {segmentStep.direct_options.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4, textTransform: 'uppercase' }}>Direct to Destination</div>
-                  {segmentStep.direct_options.map((opt, i) => (
-                    <button key={i} onClick={() => handlePickSegmentOption(opt)}
-                      onMouseEnter={() => handleHoverSegmentOption(opt)}
-                      onMouseLeave={() => handleHoverSegmentOption(null)}
-                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', marginBottom: 3,
-                        background: '#1e293b', border: '1px solid #334155', borderRadius: 6, color: '#cbd5e1', cursor: 'pointer', fontSize: 11 }}>
-                      <span style={{ color: legColors[opt.mode] || '#64748b' }}>{opt.icon || getModeIcon(opt.mode)}</span>
-                      {' '}{opt.label || getModeLabel(opt.mode)} | {formatDuration(opt.duration_minutes)} | {opt.distance_km.toFixed(2)}km
-                      {opt.per_person > 0 && prefs.groupSize > 1 ? ` | ₹${opt.per_person}/pp` : ''}
-                      {' | '}{formatRupees(opt.fare)}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Via transit stops */}
-              {segmentStep.via_stops.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4, textTransform: 'uppercase' }}>🚏 Via Transit Stops</div>
-                  {segmentStep.via_stops.map((vs, si) => (
-                    <div key={si} style={{ marginBottom: 8, padding: 8, background: '#0f172a', borderRadius: 8, border: '1px solid #334155' }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 4 }}>
-                        {vs.stop.type === 'metro' ? '🚇' : '🚌'} {vs.stop.name}
-                        <span style={{ fontSize: 9, color: '#64748b', marginLeft: 6 }}>({vs.stop.lat.toFixed(4)}, {vs.stop.lng.toFixed(4)})</span>
-                      </div>
-                      {/* Ways to reach this stop */}
-                      {vs.reach_options.length > 0 && (
-                        <div style={{ marginBottom: 4 }}>
-                          <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 2 }}>Reach this stop:</div>
-                          {vs.reach_options.map((opt, ri) => (
-                            <button key={ri} onClick={() => { handlePickSegmentOption(opt); /* after picking, show from_stop_options */ }}
-                              onMouseEnter={() => handleHoverSegmentOption(opt)}
-                              onMouseLeave={() => handleHoverSegmentOption(null)}
-                              style={{ display: 'inline-block', padding: '3px 8px', margin: '2px', background: '#1e293b', border: '1px solid #334155', borderRadius: 4, color: '#cbd5e1', cursor: 'pointer', fontSize: 10 }}>
-                              {opt.icon || getModeIcon(opt.mode)} {opt.label} | {formatRupees(opt.fare)}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {/* Options from this stop */}
-                      {vs.from_stop_options.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 2 }}>From this stop:</div>
-                          {vs.from_stop_options.map((opt, fi) => (
-                            <button key={fi} onClick={() => handlePickSegmentOption(opt)}
-                              onMouseEnter={() => handleHoverSegmentOption(opt)}
-                              onMouseLeave={() => handleHoverSegmentOption(null)}
-                              style={{ display: 'inline-block', padding: '3px 8px', margin: '2px', background: '#0f2d1a', border: '1px solid #22c55e', borderRadius: 4, color: '#cbd5e1', cursor: 'pointer', fontSize: 10 }}>
-                              {opt.icon || getModeIcon(opt.mode)} {opt.label || getModeLabel(opt.mode)}
-                              {' | '}{formatDuration(opt.duration_minutes)} | {formatRupees(opt.fare)}
-                              {opt.per_person > 0 && prefs.groupSize > 1 ? ` (₹${opt.per_person}/pp)` : ''}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {segmentStep.direct_options.length === 0 && segmentStep.via_stops.length === 0 && (
-                <div style={{ textAlign: 'center', padding: 16, color: '#64748b', fontSize: 12 }}>
-                  No options found from this location
-                </div>
-              )}
-            </div>
-          )}
-
-          {segmentLoading && (
-            <div style={{ textAlign: 'center', padding: 16, color: '#64748b', fontSize: 12 }}>⏳ Loading options...</div>
-          )}
-
-          {!segmentStep && !segmentPath.length && !segmentLoading && (
-            <div style={{ textAlign: 'center', padding: 20, color: '#64748b', fontSize: 12 }}>
-              Set source & destination and press "Start Building" below
-            </div>
-          )}
-
-          {/* Start building button */}
-          {!segmentStep && segmentPath.length === 0 && !segmentLoading && sourceLocation && destLocation && (
-            <button className="go-btn" onClick={handleStartSegmentBuilding} style={{ width: '100%' }}>
-              🔧 Start Building Segments
-            </button>
-          )}
-
-          {/* Reset button */}
-          {segmentPath.length > 0 && (
-            <button onClick={() => { setSegmentPath([]); setSegmentStep(null); handleStartSegmentBuilding(); }}
-              style={{ marginTop: 6, width: '100%', padding: '6px', background: '#1e293b', border: '1px solid #334155', borderRadius: 6, color: '#94a3b8', cursor: 'pointer', fontSize: 11 }}>
-              🔄 Reset & Start Over
-            </button>
-          )}
         </div>
       )}
 

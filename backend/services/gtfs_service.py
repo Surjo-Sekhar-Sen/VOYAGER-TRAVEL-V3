@@ -8,6 +8,7 @@ class GTFSLoader:
         self._route_shapes = {}   # route_short_name -> [shape_id, ...]
         self._stop_to_shapes = {} # stop_name -> [(shape_id, seq), ...]
         self._stops_by_name = {}  # stop_name -> (lat, lng, stop_id)
+        self._stop_times = {}     # stop_name_lower -> [(departure_time, route_short_name), ...]
         self._loaded = False
 
     def _hav(self, a, b):
@@ -42,15 +43,18 @@ class GTFSLoader:
                 self._shapes[sid] = [(c[0], c[1]) for c in self._shapes[sid]]
 
             # Load stops
+            self._stops_by_name_inv = {}
             with z.open("stops.txt") as f:
                 reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
                 for row in reader:
                     name = row["stop_name"].strip().lower()
+                    sid = row["stop_id"]
                     self._stops_by_name[name] = (
-                        float(row["stop_lat"]), float(row["stop_lon"]), row["stop_id"]
+                        float(row["stop_lat"]), float(row["stop_lon"]), sid
                     )
+                    self._stops_by_name_inv[sid] = name
 
-            # Load trips -> shape mapping
+            # Load trips -> shape mapping (moved to later section)
             trip_shape_map = {}
             with z.open("trips.txt") as f:
                 reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
@@ -59,19 +63,48 @@ class GTFSLoader:
                     if sid in self._shapes:
                         trip_shape_map[row["trip_id"]] = sid
 
-            # Load stop_times -> map stops to shapes
+            # Load routes -> short_name mapping and build trip_id -> route_short_name
+            route_id_to_name = {}
+            with z.open("routes.txt") as f:
+                reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
+                for row in reader:
+                    rid = row["route_id"]
+                    sn = row.get("route_short_name", "").strip().upper()
+                    route_id_to_name[rid] = sn
+
+            trip_to_route = {}
+            with z.open("trips.txt") as f:
+                reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
+                for row in reader:
+                    trip_to_route[row["trip_id"]] = row["route_id"]
+
+            # Load stop_times -> map stops to shapes and capture departure times
             shape_stops = {}
+            stop_times_count = 0
             with z.open("stop_times.txt") as f:
                 reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
                 for row in reader:
-                    shape_id = trip_shape_map.get(row["trip_id"])
+                    trip_id = row["trip_id"]
+                    shape_id = trip_shape_map.get(trip_id)
+                    sid = row["stop_id"]
+                    seq = int(row["stop_sequence"])
                     if shape_id:
-                        sid = row["stop_id"]
-                        seq = int(row["stop_sequence"])
                         if shape_id not in shape_stops:
                             shape_stops[shape_id] = {}
                         if sid not in shape_stops[shape_id]:
                             shape_stops[shape_id][sid] = seq
+                    # Capture departure times (limit to 300k rows for performance)
+                    if stop_times_count < 50000:
+                        dep_time = row.get("departure_time", "")
+                        if dep_time and sid in self._stops_by_name_inv:
+                            sname = self._stops_by_name_inv[sid]
+                            rid = trip_to_route.get(trip_id, "")
+                            rsn = route_id_to_name.get(rid, rid)
+                            if sname not in self._stop_times:
+                                self._stop_times[sname] = []
+                            if len(self._stop_times[sname]) < 5:
+                                self._stop_times[sname].append((dep_time, rsn))
+                    stop_times_count += 1
 
             # Build stop_name -> shape_ids index
             for sname, (slat, slng, sid) in self._stops_by_name.items():
@@ -81,16 +114,7 @@ class GTFSLoader:
                             self._stop_to_shapes[sname] = []
                         self._stop_to_shapes[sname].append((shape_id, stop_seqs[sid]))
 
-            # Load routes -> short_name mapping
-            route_id_to_name = {}
-            with z.open("routes.txt") as f:
-                reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
-                for row in reader:
-                    rid = row["route_id"]
-                    sn = row.get("route_short_name", "").strip().upper()
-                    route_id_to_name[rid] = sn
-
-            # Build route_short_name -> shapes
+            # Build route_short_name -> shapes using trip_to_route from above
             for trip_id, shape_id in trip_shape_map.items():
                 rid = trip_id.split("-")[0] if "-" in trip_id else trip_id
                 short_name = route_id_to_name.get(rid, rid)
@@ -137,5 +161,22 @@ class GTFSLoader:
                 else:
                     return list(reversed(segment))
         return None
+
+    def get_next_buses(self, stop_name: str, limit: int = 3) -> list:
+        key = stop_name.lower().strip()
+        times = self._stop_times.get(key, [])
+        if not times:
+            return []
+        from datetime import datetime
+        now = datetime.now()
+        current_seconds = now.hour * 3600 + now.minute * 60 + now.second
+        def time_to_seconds(t):
+            parts = t.split(':')
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]) if len(parts) == 3 else 0
+        future_times = [(t, r) for t, r in times if time_to_seconds(t) >= current_seconds]
+        if not future_times:
+            future_times = times
+        sorted_times = sorted(future_times, key=lambda x: x[0])
+        return [{"departure_time": t[0], "route": t[1]} for t in sorted_times[:limit]]
 
 gtfs_loader = GTFSLoader()

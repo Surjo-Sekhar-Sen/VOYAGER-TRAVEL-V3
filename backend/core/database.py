@@ -25,11 +25,13 @@ class TransitDatabase:
         self.kia_routes = {}
         self.transit_fares = {}
         self.wards_data = {}
+        self.railway_stations = []
 
         self._load_transit_fares()
         self._load_metro_data()
         self._load_bus_stops()
         self._load_kia_routes()
+        self._load_railway_stations()
 
     def _load_transit_fares(self):
         path = os.path.join(settings.DATA_CACHE_DIR, "transit_fares.json")
@@ -165,6 +167,21 @@ class TransitDatabase:
                 results.append({**stop, "distance_km": round(dist, 3)})
         results.sort(key=lambda x: x["distance_km"])
         return results[:20]
+
+    def _load_railway_stations(self):
+        path = os.path.join(settings.DATA_CACHE_DIR, "karnataka_railway_stations.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                self.railway_stations = json.load(f)
+
+    def find_nearby_railway_stations(self, lat: float, lng: float, radius_km: float = 30.0) -> list:
+        results = []
+        for stn in self.railway_stations:
+            dist = geodesic((lat, lng), (stn["lat"], stn["lng"])).km
+            if dist <= radius_km:
+                results.append({**stn, "distance_km": round(dist, 3)})
+        results.sort(key=lambda x: x["distance_km"])
+        return results[:10]
 
     def get_metro_distance_between(self, stn_a_name: str, stn_b_name: str) -> float:
         code_a = code_b = None

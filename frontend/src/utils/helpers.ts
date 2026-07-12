@@ -24,6 +24,8 @@ export function getModeIcon(mode: string): string {
     kia_bus: '🚍',
     bus_to_metro: '🚌➡️🚇',
     metro_to_bus: '🚇➡️🚌',
+    bus_then_cab: '🚌➡️🚕',
+    train: '🚆',
   }
   return icons[mode] || '📍'
 }
@@ -54,6 +56,8 @@ export function getModeLabel(mode: string): string {
     kia_bus: 'KIA Vayu Vajra',
     bus_to_metro: 'Bus → Metro',
     metro_to_bus: 'Metro → Bus',
+    bus_then_cab: 'Bus + Cab',
+    train: 'Train',
   }
   return labels[mode] || mode
 }

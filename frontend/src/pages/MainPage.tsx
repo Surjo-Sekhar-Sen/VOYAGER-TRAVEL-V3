@@ -7,6 +7,7 @@ import AToBPanel from '../components/AToBPanel'
 import TripPanel from '../components/TripPanel'
 import DiscoveryPanel from '../components/DiscoveryPanel'
 import NewsOverlay from '../components/NewsOverlay'
+import SegmentPanel from '../components/SegmentPanel'
 
 interface MainPageProps {
   mode: AppMode
@@ -52,6 +53,32 @@ export default function MainPage({
   const [routeGeometry, setRouteGeometry] = useState<MapRouteGeometry[]>([])
   const [newsItems, setNewsItems] = useState<NewsItem[]>([])
   const [mapWaypoints, setMapWaypoints] = useState<{ lat: number; lng: number; query: string }[]>([])
+
+  const [segmentPanelOpen, setSegmentPanelOpen] = useState(false)
+  const [segmentSourceName, setSegmentSourceName] = useState('')
+  const [segmentDestName, setSegmentDestName] = useState('')
+  const [segmentGroupSize, setSegmentGroupSize] = useState(1)
+  const [segmentBudget, setSegmentBudget] = useState<number | undefined>(undefined)
+  const [segmentGeometry, setSegmentGeometry] = useState<MapRouteGeometry[]>([])
+
+  const handleOpenSegmentPanel = useCallback((srcName: string, dstName: string, groupSize: number, budget?: number) => {
+    setSegmentSourceName(srcName)
+    setSegmentDestName(dstName)
+    setSegmentGroupSize(groupSize)
+    setSegmentBudget(budget)
+    setSegmentGeometry([])
+    setSegmentPanelOpen(true)
+  }, [])
+
+  const handleCloseSegmentPanel = useCallback(() => {
+    setSegmentPanelOpen(false)
+    setSegmentGeometry([])
+    setRouteGeometry(prev => prev.filter(g => g.type !== 'segment' && g.type !== 'hover' && g.type !== 'stop'))
+  }, [])
+
+  const handleSegmentGeometry = useCallback((geo: MapRouteGeometry[]) => {
+    setSegmentGeometry(geo)
+  }, [])
 
   const handleLocateNews = useCallback((item: NewsItem) => {
     if (item.lat && item.lng && mapRef.current) {
@@ -141,6 +168,7 @@ export default function MainPage({
             onRouteGeometry={setRouteGeometry}
             onNewsUpdate={setNewsItems}
             onWaypointsChange={setMapWaypoints}
+            onOpenSegmentPanel={handleOpenSegmentPanel}
           />
         )
       case 'trip':
@@ -209,7 +237,7 @@ export default function MainPage({
           mapRef={mapRef}
           allMarkers={allMarkers}
           onMarkerClick={handleViewOnMap}
-          routeGeometry={routeGeometry}
+          routeGeometry={[...routeGeometry, ...segmentGeometry]}
           newsItems={newsItems}
           waypoints={mapWaypoints}
         />
@@ -223,6 +251,19 @@ export default function MainPage({
           <DiscoveryPanel
             place={discoveryPlace}
             onClose={() => setShowDiscovery(false)}
+          />
+        )}
+
+        {segmentPanelOpen && sourceLocation && destLocation && (
+          <SegmentPanel
+            sourceLocation={sourceLocation}
+            destLocation={destLocation}
+            sourceName={segmentSourceName}
+            destName={segmentDestName}
+            groupSize={segmentGroupSize}
+            budget={segmentBudget}
+            onClose={handleCloseSegmentPanel}
+            onGeometryChange={handleSegmentGeometry}
           />
         )}
       </div>
