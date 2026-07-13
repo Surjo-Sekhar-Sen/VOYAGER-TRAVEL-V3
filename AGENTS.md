@@ -5,7 +5,7 @@
   - `backend/services/transit_service.py` — main routing logic (two-phase segment builder, train data, smart filtering)
   - `backend/services/gtfs_service.py` — BMTC GTFS data loader (synchronous at startup, ~41s)
   - `backend/core/database.py` — bus/metro/railway station data
-- **Frontend**: Vite + React/TS on port 5173
+- **Frontend**: Vite + React/TS on port 3000
   - `src/components/SegmentPanel.tsx` — two-phase sequential overlay (init → from) with timeline, color-coded cards
   - `src/utils/helpers.ts` — mode icons/labels
 
@@ -34,7 +34,7 @@
 ```powershell
 cd VOYAGER
 python -m uvicorn backend.main:app --reload --port 8000
-cd frontend; npx vite --port 5173
+cd frontend; npx vite --port 3000
 ```
 
 ## API Endpoint

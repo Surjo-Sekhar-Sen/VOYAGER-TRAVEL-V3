@@ -50,6 +50,9 @@ export default function SegmentPanel({
   const [customLoading, setCustomLoading] = useState(false)
   const [showCustomInput, setShowCustomInput] = useState(false)
   const [selectedColIndex, setSelectedColIndex] = useState<number | null>(null)
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const columnsRef = useRef(columns)
+  columnsRef.current = columns
   const abortRef = useRef<AbortController | null>(null)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -142,8 +145,8 @@ export default function SegmentPanel({
       type: 'from',
     }
     setColumns(prev => [...prev, newCol])
-    setSelectedColIndex(columns.length)
-  }, [columns])
+    setSelectedColIndex(columnsRef.current.length)
+  }, [])
 
   // Phase 2: User picked a from_option
   const handlePickFrom = useCallback((opt: SegmentStepOption, colIdx: number) => {
@@ -178,6 +181,30 @@ export default function SegmentPanel({
       return c
     }))
   }, [destName])
+
+  // Go back and edit from a specific step
+  const handleGoBack = useCallback((stepIndex: number) => {
+    if (stepIndex < 0) {
+      handleStartBuilding()
+      return
+    }
+    const truncated = builtPath.slice(0, stepIndex)
+    const lastOpt = builtPath[stepIndex]
+    const fromName = truncated.length > 0 ? truncated[truncated.length - 1].to : sourceName
+    const fromLat = truncated.length > 0 ? truncated[truncated.length - 1].to_lat : sourceLocation[0]
+    const fromLng = truncated.length > 0 ? truncated[truncated.length - 1].to_lng : sourceLocation[1]
+    setBuiltPath(truncated)
+    setColumns([])
+    setSelectedColIndex(null)
+    setCurrentFromName(fromName)
+    setPhase('init')
+    setHoveredOption(null)
+    if (fromLat && fromLng) {
+      fetchStepFrom(fromLat, fromLng, fromName)
+    } else {
+      handleStartBuilding()
+    }
+  }, [builtPath, sourceName, sourceLocation, fetchStepFrom, handleStartBuilding])
 
   const handleAddCustomWaypoint = useCallback((place: PlaceResult) => {
     const customOpt: SegmentStepOption = {
@@ -218,6 +245,7 @@ export default function SegmentPanel({
   }, [destLocation])
 
   const totalFare = builtPath.reduce((sum, s) => sum + (s.fare || 0), 0)
+  const totalPerPerson = builtPath.reduce((sum, s) => sum + ((s.per_person || 0)), 0)
   const totalDuration = builtPath.reduce((sum, s) => sum + (s.duration_minutes || 0), 0)
   const totalDistance = builtPath.reduce((sum, s) => sum + (s.distance_km || 0), 0)
   const isComplete = phase === 'direct' && builtPath.length > 0
@@ -282,11 +310,13 @@ export default function SegmentPanel({
 
   const renderOptionDetail = (opt: SegmentStepOption, idx: number) => {
     const rn = (opt as any).route_numbers
+    const routeNum = (opt as any).route_number
     const busTimes = (opt as any).bus_times
     const subLegs = (opt as any).sub_legs
     const tn = (opt as any).train_number
     const dep = (opt as any).departure_time || (opt as any).departure
     const arr = (opt as any).arrival_time || (opt as any).arrival
+    const cap = (opt as any).group_capacity
 
     return (
       <div key={idx}>
@@ -294,12 +324,17 @@ export default function SegmentPanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13 }}>{opt.icon || getModeIcon(opt.mode)}</span>
           <span style={{ fontWeight: 600, fontSize: 11, color: '#e2e8f0' }}>{opt.label || getModeLabel(opt.mode)}</span>
-          {rn && rn.length > 0 && (
+          {routeNum && (
+            <span style={{ fontSize: 10, color: '#60a5fa', background: '#1e3a5f', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+              {routeNum}
+            </span>
+          )}
+          {!routeNum && rn && rn.length > 0 && (
             <span style={{ fontSize: 8, color: '#60a5fa', background: '#1e3a5f', padding: '1px 4px', borderRadius: 3 }}>
               {rn.slice(0, 3).join(', ')}
             </span>
           )}
-          {tn && <span style={{ fontSize: 8, color: '#a855f7' }}>#{tn}</span>}
+          {tn && <span style={{ fontSize: 9, color: '#a855f7', fontWeight: 600 }}>#{tn}</span>}
         </div>
 
         {/* Route info */}
@@ -308,12 +343,24 @@ export default function SegmentPanel({
           <span>{formatDuration(opt.duration_minutes)}</span>
           <span>{opt.distance_km.toFixed(2)}km</span>
           <span style={{ color: '#fbbf24' }}>{formatRupees(opt.fare)} {opt.per_person ? `(${formatRupees(opt.per_person)}/pp)` : ''}</span>
+          {cap && <span style={{ color: '#64748b' }}>👥 up to {cap}</span>}
         </div>
 
-        {/* Bus timings */}
+        {/* Bus timings - individual route times */}
         {busTimes && busTimes.length > 0 && (
-          <div style={{ fontSize: 8, color: '#f59e0b', marginTop: 2 }}>
-            ⏰ Next buses: {busTimes.slice(0, 4).map((bt: any) => bt.departure_time).join(', ')}
+          <div style={{ fontSize: 8, color: '#f59e0b', marginTop: 2, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            ⏰ {busTimes.slice(0, 4).map((bt: any, bi: number) => (
+              <span key={bi} style={{ background: '#1e3a5f', padding: '1px 4px', borderRadius: 3, color: '#fbbf24' }}>
+                {bt.departure_time}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* No bus times available message */}
+        {opt.mode.startsWith('bus_') && (!busTimes || busTimes.length === 0) && (
+          <div style={{ fontSize: 8, color: '#64748b', marginTop: 2, fontStyle: 'italic' }}>
+            Schedule data not available
           </div>
         )}
 
@@ -372,31 +419,35 @@ export default function SegmentPanel({
         padding: '6px 14px', borderBottom: '1px solid #1e293b',
         overflowX: 'auto', flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 10, whiteSpace: 'nowrap' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 36 }}>
-            <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, border: '2px solid #60a5fa' }}>📍</div>
-            <span style={{ color: '#e2e8f0', fontSize: 7, marginTop: 1, maxWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis' }}>{sourceName.slice(0, 6)}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 10, whiteSpace: 'nowrap', paddingBottom: 2 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 40, cursor: builtPath.length > 0 ? 'pointer' : 'default' }}
+            onClick={() => builtPath.length > 0 && handleGoBack(-1)}>
+            <div style={{ width: 24, height: 24, borderRadius: '50%', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, border: '2px solid #60a5fa' }}>📍</div>
+            <span style={{ color: '#e2e8f0', fontSize: 8, marginTop: 1, maxWidth: 50, overflow: 'hidden', textOverflow: 'ellipsis' }}>{sourceName.slice(0, 8)}</span>
           </div>
           {builtPath.map((opt, idx) => {
             const color = idx < SEGMENT_COLORS.length ? SEGMENT_COLORS[idx] : '#94a3b8'
+            const isLast = idx === builtPath.length - 1
             return (
               <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <div style={{ width: 14, height: 2, background: color }} />
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 36 }}>
-                  <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#1e293b', border: `2px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 }}>
+                <div style={{ width: 16, height: 3, background: color, borderRadius: 2 }} />
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 40, cursor: 'pointer' }}
+                  onClick={() => isLast ? null : handleGoBack(idx)}>
+                  <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#1a2332', border: `2px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, position: 'relative' }}>
                     {opt.icon || getModeIcon(opt.mode)}
+                    {!isLast && <span style={{ position: 'absolute', top: -6, right: -6, fontSize: 7, color: '#94a3b8' }}>✕</span>}
                   </div>
-                  <span style={{ color: '#94a3b8', fontSize: 7, marginTop: 1, maxWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis' }}>{opt.to.length > 6 ? opt.to.slice(0, 6) + '..' : opt.to}</span>
-                  <span style={{ color: '#fbbf24', fontSize: 7 }}>{formatDuration(opt.duration_minutes)}</span>
+                  <span style={{ color: '#cbd5e1', fontSize: 8, marginTop: 1, maxWidth: 50, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: isLast ? 600 : 400 }}>{opt.to.length > 8 ? opt.to.slice(0, 8) + '..' : opt.to}</span>
+                  <span style={{ color: '#fbbf24', fontSize: 8, fontWeight: 500 }}>{formatRupees(opt.fare)}</span>
                 </div>
               </div>
             )
           })}
           <div style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <div style={{ width: 14, height: 2, background: isComplete ? '#22c55e' : '#334155' }} />
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 36 }}>
-              <div style={{ width: 22, height: 22, borderRadius: '50%', background: isComplete ? '#0f2d1a' : '#1e293b', border: isComplete ? '2px solid #22c55e' : '2px dashed #334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>🏁</div>
-              <span style={{ color: isComplete ? '#22c55e' : '#64748b', fontSize: 7, marginTop: 1, fontWeight: isComplete ? 700 : 400 }}>{destName.length > 6 ? destName.slice(0, 6) + '..' : destName}</span>
+            <div style={{ width: 16, height: 3, background: isComplete ? '#22c55e' : '#334155', borderRadius: 2 }} />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 40 }}>
+              <div style={{ width: 24, height: 24, borderRadius: '50%', background: isComplete ? '#0f2d1a' : '#1e293b', border: isComplete ? '2px solid #22c55e' : '2px dashed #334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>🏁</div>
+              <span style={{ color: isComplete ? '#22c55e' : '#64748b', fontSize: 8, marginTop: 1, fontWeight: isComplete ? 700 : 400, maxWidth: 50, overflow: 'hidden', textOverflow: 'ellipsis' }}>{destName.length > 8 ? destName.slice(0, 8) + '..' : destName}</span>
             </div>
           </div>
         </div>
@@ -407,12 +458,32 @@ export default function SegmentPanel({
         <div style={{
           display: 'flex', gap: 10, padding: '4px 14px', background: '#1a2332',
           borderBottom: '1px solid #1e293b', fontSize: 9, color: '#94a3b8', flexShrink: 0,
+          alignItems: 'center',
         }}>
-          <span>💰 <strong style={{ color: '#fbbf24' }}>{formatRupees(totalFare)}</strong></span>
+          <span>💰 <strong style={{ color: '#fbbf24' }}>{formatRupees(totalFare)}</strong>
+            {totalPerPerson > 0 && <span style={{ color: '#64748b', fontSize: 8 }}> ({formatRupees(totalPerPerson)}/pp)</span>}
+          </span>
           <span>⏱️ <strong style={{ color: '#e2e8f0' }}>{formatDuration(totalDuration)}</strong></span>
           <span>📏 <strong style={{ color: '#e2e8f0' }}>{totalDistance.toFixed(1)}km</strong></span>
           <span style={{ fontSize: 8, color: '#64748b' }}>{builtPath.length} step{builtPath.length !== 1 ? 's' : ''}</span>
-          {isComplete && <span style={{ color: '#22c55e', marginLeft: 'auto', fontWeight: 700 }}>✅ Journey Complete!</span>}
+          {budget && budget > 0 && (
+            <div style={{ flex: 1, maxWidth: 120, marginLeft: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 7, marginBottom: 1 }}>
+                <span style={{ color: totalFare > budget ? '#ef4444' : '#94a3b8' }}>
+                  {Math.round((totalFare / budget) * 100)}%
+                </span>
+                <span style={{ color: '#64748b' }}>of ₹{budget}</span>
+              </div>
+              <div style={{ height: 4, background: '#1e293b', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', width: `${Math.min(100, (totalFare / budget) * 100)}%`,
+                  background: totalFare > budget ? '#ef4444' : '#22c55e',
+                  borderRadius: 4, transition: 'width 0.3s',
+                }} />
+              </div>
+            </div>
+          )}
+          {isComplete && <span style={{ color: '#22c55e', marginLeft: 'auto', fontWeight: 700, fontSize: 10 }}>✅ Done!</span>}
         </div>
       )}
 
@@ -529,11 +600,17 @@ export default function SegmentPanel({
                       <span>⏱️ {formatDuration(opt.duration_minutes)}</span>
                       <span>📏 {opt.distance_km.toFixed(2)}km</span>
                       <span>💰 {formatRupees(opt.fare)}</span>
-                      {(opt as any).route_numbers && (
+                      {(opt as any).route_number && (
+                        <span style={{ color: '#60a5fa', fontWeight: 600 }}>🚌 {(opt as any).route_number}</span>
+                      )}
+                      {(opt as any).route_numbers && !(opt as any).route_number && (
                         <span style={{ color: '#60a5fa' }}>🚌 [{(opt as any).route_numbers.join(', ')}]</span>
                       )}
                       {(opt as any).train_number && (
                         <span style={{ color: '#a855f7' }}>🚆 #{(opt as any).train_number}</span>
+                      )}
+                      {(opt as any).departure_time && (
+                        <span style={{ color: '#f59e0b' }}>🕐 {(opt as any).departure_time}</span>
                       )}
                     </div>
                   </div>

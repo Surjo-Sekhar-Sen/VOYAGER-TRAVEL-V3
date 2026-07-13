@@ -180,10 +180,10 @@ export default function MapView({
         )
       })}
       {/* Route polylines - colored fill (solid for transit, dashed for walking) */}
-      {routeGeometry?.map((rg, i) => {
+      {routeGeometry?.filter(rg => rg.type !== 'stop').map((rg, i) => {
         const coords = rg.coordinates.map(c => [c[0], c[1]] as [number, number])
         const isMain = rg.type === 'route'
-        const isWalk = rg.label?.toLowerCase().includes('walk') || rg.dashArray === '8, 6'
+        const isWalk = rg.label?.toLowerCase().includes('walk') || rg.dashArray === '10, 6'
         const w = rg.weight || (rg.type === 'hover' ? 7 : isMain ? 6 : 4)
         return (
           <Polyline
@@ -193,7 +193,7 @@ export default function MapView({
               color: rg.color,
               weight: w,
               opacity: rg.type === 'hover' ? 0.95 : 0.85,
-              dashArray: isWalk ? '8, 6' : rg.dashArray,
+              dashArray: isWalk ? '10, 6' : rg.dashArray,
               lineCap: 'round',
               lineJoin: 'round',
             }}

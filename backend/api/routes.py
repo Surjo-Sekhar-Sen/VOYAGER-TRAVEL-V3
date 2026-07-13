@@ -51,7 +51,6 @@ def _combine_multi_stop_routes(segment_routes: list[dict]) -> list[dict]:
             combined_driving["total_fare"] += best_driving.get("total_fare", 0)
             combined_driving["total_duration_minutes"] += best_driving.get("total_duration_minutes", 0)
             combined_driving["total_distance_km"] += best_driving.get("total_distance_km", 0)
-            combined_driving["total_fare"] += best_driving.get("total_fare", 0)
 
     n = len(segment_routes)
     if combined_transit["legs"]:

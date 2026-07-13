@@ -75,10 +75,11 @@ class TransitDatabase:
                         sc_a = station_codes[j]
                         sc_b = station_codes[j + 1]
                         next_s = self._metro_by_code.get(sc_a, {})
+                        nlat, nlng = next_s.get("lat", 0), next_s.get("lng", 0)
+                        nxt = self._metro_by_code.get(sc_b, {})
+                        nxt_lat, nxt_lng = nxt.get("lat", 0), nxt.get("lng", 0)
                         cum_dist += next_s.get("distance_to_next_km", 
-                            geodesic((next_s.get("lat",0), next_s.get("lng",0)),
-                                     (self._metro_by_code.get(sc_b, {}).get("lat",0),
-                                      self._metro_by_code.get(sc_b, {}).get("lng",0))).km)
+                            geodesic((nlat, nlng), (nxt_lat, nxt_lng)).km)
                         if sc1 != sc_b:
                             self._metro_distance_cache[(sc1, sc_b)] = round(cum_dist, 2)
 
