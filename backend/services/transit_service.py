@@ -495,13 +495,24 @@ class TransitService:
                 for dst_m in dest_metro[:2]:
                     walking_to_bus = self.haversine_distance(slat, slng, src_bus["lat"], src_bus["lng"])
                     bus_dist = self.haversine_distance(src_bus["lat"], src_bus["lng"], dst_m["lat"], dst_m["lng"])
-                    metro_dist_via = db.get_metro_distance_between(dst_m["name"], dst_m["name"]) or bus_dist * 0.7
+                    metro_near_src = None
+                    for m in metro_stations:
+                        d = self.haversine_distance(src_bus["lat"], src_bus["lng"], m["lat"], m["lng"])
+                        if d < 2.0:
+                            metro_near_src = m
+                            break
+                    if metro_near_src:
+                        metro_dist_via = db.get_metro_distance_between(metro_near_src["name"], dst_m["name"]) or bus_dist * 0.7
+                        metro_from_name = metro_near_src["name"]
+                    else:
+                        metro_dist_via = bus_dist * 0.7
+                        metro_from_name = dst_m["name"]
                     walking_from_metro = self.haversine_distance(dlat, dlng, dst_m["lat"], dst_m["lng"])
                     bus_fare = db.get_bmtc_ordinary_fare(bus_dist)
                     metro_fare = db.get_metro_fare(metro_dist_via) * group_size
                     total_walk = walking_to_bus + walking_from_metro
                     total_dur = (bus_dist / 25) * 60 + (metro_dist_via / 35) * 60 + total_walk * 12 + 5
-                    common_routes = self._get_bus_route_nums(src_bus, {})
+                    common_routes = self._get_bus_route_nums(src_bus, dst_m) if not metro_near_src else self._get_bus_route_nums(src_bus, {})
                     route_str = ", ".join(common_routes[:2]) if common_routes else "Multiple"
                     routes.append({
                         "type": "bus_to_metro",
@@ -517,7 +528,7 @@ class TransitService:
                              "distance_km": round(bus_dist, 2), "duration_minutes": round(bus_dist / 25 * 60),
                              "fare": round(bus_fare * group_size, 2), "route_numbers": common_routes,
                              "instructions": f"Bus {route_str} to {dst_m['name']}"},
-                            {"from": dst_m["name"], "to": dst_m["name"], "mode": "metro", "line": dst_m.get("line"),
+                            {"from": metro_from_name, "to": dst_m["name"], "mode": "metro", "line": dst_m.get("line"),
                              "distance_km": round(metro_dist_via, 2), "duration_minutes": round(metro_dist_via / 35 * 60), "fare": metro_fare},
                             {"from": dst_m["name"], "to": "Your Destination", "mode": "walk",
                              "distance_km": round(walking_from_metro, 2), "duration_minutes": round(walking_from_metro * 12), "fare": 0}
@@ -529,7 +540,18 @@ class TransitService:
             for src_m in metro_stations[:2]:
                 for dst_bus in dest_bus_stops[:2]:
                     walking_to_metro = self.haversine_distance(slat, slng, src_m["lat"], src_m["lng"])
-                    metro_dist_via = db.get_metro_distance_between(src_m["name"], src_m["name"]) or dist * 0.5
+                    metro_near_dest = None
+                    for m in dest_metro:
+                        d = self.haversine_distance(dst_bus["lat"], dst_bus["lng"], m["lat"], m["lng"])
+                        if d < 2.0:
+                            metro_near_dest = m
+                            break
+                    if metro_near_dest:
+                        metro_dist_via = db.get_metro_distance_between(src_m["name"], metro_near_dest["name"]) or dist * 0.5
+                        metro_to_name = metro_near_dest["name"]
+                    else:
+                        metro_dist_via = dist * 0.5
+                        metro_to_name = src_m["name"]
                     bus_from_metro = self.haversine_distance(src_m["lat"], src_m["lng"], dst_bus["lat"], dst_bus["lng"])
                     walking_from_bus = self.haversine_distance(dlat, dlng, dst_bus["lat"], dst_bus["lng"])
                     metro_fare = db.get_metro_fare(abs(src_m.get("sequence", 0) - dst_bus.get("sequence", 0)) * 1.5) if metro_stations else db.get_metro_fare(dist)
@@ -550,7 +572,7 @@ class TransitService:
                         "legs": [
                             {"from": "Your Location", "to": src_m["name"], "mode": "walk",
                              "distance_km": round(walking_to_metro, 2), "duration_minutes": round(walking_to_metro * 12), "fare": 0},
-                            {"from": src_m["name"], "to": src_m["name"], "mode": "metro", "line": src_m.get("line"),
+                            {"from": src_m["name"], "to": metro_to_name, "mode": "metro", "line": src_m.get("line"),
                              "distance_km": round(metro_dist_via, 2), "duration_minutes": round(metro_dist_via / 35 * 60), "fare": round(metro_fare * group_size, 2)},
                             {"from": src_m["name"], "to": dst_bus["name"], "mode": "bus_ordinary",
                              "distance_km": round(bus_from_metro, 2), "duration_minutes": round(bus_from_metro / 25 * 60),
@@ -906,33 +928,50 @@ class TransitService:
                         "from_lat": from_lat, "from_lng": from_lng,
                         "to_lat": _safe(stop.get("lat")), "to_lng": _safe(stop.get("lng")),
                     })
-            # From this stop: bus transit to dest area (only if common routes exist)
+            # From this stop: bus transit to dest area — individual route cards
             if has_common:
                 for ds in dest_bus[:2]:
                     transit_dist = _safe(self.haversine_distance(stop["lat"], stop["lng"], ds["lat"], ds["lng"]))
                     if transit_dist < 0.5:
                         continue
-                    bus_fare_pp = round(db.get_bmtc_ordinary_fare(transit_dist) or 6)
-                    total_fare = bus_fare_pp * group_size
-                    if budget and total_fare > budget:
-                        continue
                     common_routes = self._get_bus_route_nums(stop, ds)
                     if not common_routes:
                         continue
-                    route_str = ", ".join(common_routes[:5])
-                    bus_timings = _ensure_gtfs().get_next_buses(stop.get("name", ""))
-                    stop_entry["from_stop_options"].append({
-                        "mode": "bus", "label": f"Bus to {ds['name']} [{route_str}]", "icon": "🚌",
-                        "from": stop_name, "to": ds.get("name", "Bus Stop"),
-                        "distance_km": round(_safe(transit_dist), 2),
-                        "duration_minutes": round(transit_dist * 4),
-                        "fare": total_fare, "per_person": bus_fare_pp,
-                        "from_lat": _safe(stop.get("lat")), "from_lng": _safe(stop.get("lng")),
-                        "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
-                        "arrives_at_stop": True,
-                        "route_numbers": common_routes[:5],
-                        "bus_times": bus_timings if bus_timings else None,
-                    })
+                    all_bus_timings = _ensure_gtfs().get_next_buses(stop.get("name", ""), 20)
+                    for route_num in common_routes[:5]:
+                        bus_fare_pp = round(db.get_bmtc_ordinary_fare(transit_dist) or 6)
+                        total_fare = bus_fare_pp * group_size
+                        if budget and total_fare > budget:
+                            continue
+                        route_times = [bt for bt in all_bus_timings if route_num in bt.get("route", "")] if all_bus_timings else []
+                        stop_entry["from_stop_options"].append({
+                            "mode": "bus_ordinary", "label": f"Bus {route_num} to {ds['name']}", "icon": "🚌",
+                            "route_number": route_num,
+                            "from": stop_name, "to": ds.get("name", "Bus Stop"),
+                            "distance_km": round(_safe(transit_dist), 2),
+                            "duration_minutes": round(transit_dist * 4),
+                            "fare": total_fare, "per_person": bus_fare_pp,
+                            "from_lat": _safe(stop.get("lat")), "from_lng": _safe(stop.get("lng")),
+                            "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
+                            "arrives_at_stop": True,
+                            "bus_times": route_times[:5] if route_times else None,
+                        })
+                        # AC Vajra variant
+                        ac_fare_pp = round(db.get_bmtc_ac_fare(transit_dist) or 10)
+                        ac_total = ac_fare_pp * group_size
+                        if not budget or ac_total <= budget:
+                            stop_entry["from_stop_options"].append({
+                                "mode": "bus_ac_vajra", "label": f"Bus {route_num} AC to {ds['name']}", "icon": "🚌",
+                                "route_number": route_num,
+                                "from": stop_name, "to": ds.get("name", "Bus Stop"),
+                                "distance_km": round(_safe(transit_dist), 2),
+                                "duration_minutes": round(transit_dist * 3.5),
+                                "fare": ac_total, "per_person": ac_fare_pp,
+                                "from_lat": _safe(stop.get("lat")), "from_lng": _safe(stop.get("lng")),
+                                "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
+                                "arrives_at_stop": True,
+                                "bus_times": route_times[:5] if route_times else None,
+                            })
             # From this stop: metro rides
             dest_metro = db.find_nearby_metro_stations(dest_lat, dest_lng, 2.0) or []
             for dm in dest_metro[:2]:
@@ -1039,30 +1078,46 @@ class TransitService:
                     "to_lat": _safe(dm.get("lat")), "to_lng": _safe(dm.get("lng")),
                     "arrives_at_stop": True,
                 })
-            # Bus from metro station (only if common routes exist)
+            # Bus from metro station — individual route cards
             dest_bus = db.find_nearby_bus_stops(dest_lat, dest_lng, 1.0) or []
             for ds in dest_bus[:2]:
                 transit_dist = _safe(self.haversine_distance(station["lat"], station["lng"], ds["lat"], ds["lng"]))
                 if transit_dist < 0.5: continue
                 common_routes = self._get_bus_route_nums(station, ds)
                 if not common_routes: continue
-                bus_fare_pp = max(6, round(db.get_bmtc_ordinary_fare(transit_dist) or 6))
-                total_fare = bus_fare_pp * group_size
-                if budget and total_fare > budget: continue
-                route_str = ", ".join(common_routes[:5])
-                bus_timings = _ensure_gtfs().get_next_buses(station.get("name", ""))
-                stop_entry["from_stop_options"].append({
-                    "mode": "bus", "label": f"Bus to {ds['name']} [{route_str}]", "icon": "🚌",
-                    "from": station_name, "to": ds.get("name", "Bus Stop"),
-                    "distance_km": round(_safe(transit_dist), 2),
-                    "duration_minutes": round(transit_dist * 4),
-                    "fare": total_fare, "per_person": bus_fare_pp,
-                    "from_lat": _safe(station.get("lat")), "from_lng": _safe(station.get("lng")),
-                    "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
-                    "arrives_at_stop": True,
-                    "route_numbers": common_routes[:5],
-                    "bus_times": bus_timings if bus_timings else None,
-                })
+                all_bus_timings = _ensure_gtfs().get_next_buses(station.get("name", ""), 20)
+                for route_num in common_routes[:5]:
+                    bus_fare_pp = max(6, round(db.get_bmtc_ordinary_fare(transit_dist) or 6))
+                    total_fare = bus_fare_pp * group_size
+                    if budget and total_fare > budget: continue
+                    route_times = [bt for bt in all_bus_timings if route_num in bt.get("route", "")] if all_bus_timings else []
+                    stop_entry["from_stop_options"].append({
+                        "mode": "bus_ordinary", "label": f"Bus {route_num} to {ds['name']}", "icon": "🚌",
+                        "route_number": route_num,
+                        "from": station_name, "to": ds.get("name", "Bus Stop"),
+                        "distance_km": round(_safe(transit_dist), 2),
+                        "duration_minutes": round(transit_dist * 4),
+                        "fare": total_fare, "per_person": bus_fare_pp,
+                        "from_lat": _safe(station.get("lat")), "from_lng": _safe(station.get("lng")),
+                        "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
+                        "arrives_at_stop": True,
+                        "bus_times": route_times[:5] if route_times else None,
+                    })
+                    ac_fare_pp = max(10, round(db.get_bmtc_ac_fare(transit_dist) or 10))
+                    ac_total = ac_fare_pp * group_size
+                    if not budget or ac_total <= budget:
+                        stop_entry["from_stop_options"].append({
+                            "mode": "bus_ac_vajra", "label": f"Bus {route_num} AC to {ds['name']}", "icon": "🚌",
+                            "route_number": route_num,
+                            "from": station_name, "to": ds.get("name", "Bus Stop"),
+                            "distance_km": round(_safe(transit_dist), 2),
+                            "duration_minutes": round(transit_dist * 3.5),
+                            "fare": ac_total, "per_person": ac_fare_pp,
+                            "from_lat": _safe(station.get("lat")), "from_lng": _safe(station.get("lng")),
+                            "to_lat": _safe(ds.get("lat")), "to_lng": _safe(ds.get("lng")),
+                            "arrives_at_stop": True,
+                            "bus_times": route_times[:5] if route_times else None,
+                        })
             # Direct rides from metro to destination
             station_to_dest_dist = _safe(self.haversine_distance(station["lat"], station["lng"], dest_lat, dest_lng))
             if station_to_dest_dist <= 2:
@@ -1322,7 +1377,7 @@ class TransitService:
 
             # Bus legs: try GTFS shape between stops (instant, no HTTP call)
             if mode in ("bus_ordinary", "bus_ac_vajra", "kia_bus") and leg.get("from") and leg.get("to"):
-                shape = gtfs_loader.get_shape_between_stops(leg["from"], leg["to"])
+                shape = _gtfs.get_shape_between_stops(leg["from"], leg["to"])
                 if shape:
                     route["legs"][i]["path"] = [[lat, lng] for lat, lng in shape]
                     continue
