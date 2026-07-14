@@ -614,6 +614,92 @@ budget (optional)
 }
 ```
 
+#### `GET /api/routes/all-segments`
+
+Generate all chained segments for progressive multi-column journey builder.
+
+**Parameters:**
+```
+from_lat, from_lng, from_name        — current location
+dest_lat, dest_lng, dest_name        — destination
+group_size (default: 1)              — number of travelers
+budget (optional)                    — max total budget ₹
+max_depth (default: 3)               — max recursion depth for chained segments
+```
+
+**Returns (simplified):**
+```json
+{
+  "status": "success",
+  "data": {
+    "source": { "lat": 12.97, "lng": 77.59, "name": "MG Road" },
+    "dest": { "lat": 12.93, "lng": 77.61, "name": "Lalbagh" },
+    "segments": [
+      {
+        "segment_index": 0,
+        "from": { "name": "MG Road", "lat": 12.97, "lng": 77.59 },
+        "direct_options": [ ... ],       // Walk + cab/auto/bike to dest
+        "destinations": [
+          {
+            "stop": { "name": "Cubbon Park", "lat": 12.97, "lng": 77.59, "type": "bus" },
+            "distance_from_current": 0.3, // km
+            "reach_options": [ ... ],     // walk/cab/auto to reach this stop
+            "transit_options": [          // what to do FROM this stop
+              {
+                "mode": "bus_ordinary",
+                "route_number": "201A",
+                "from": "Cubbon Park",
+                "to": "Lalbagh Main Gate",
+                "fare": 12,
+                "arrives_at_stop": true,
+                "final_options": [ ... ],  // last-mile to dest (when close enough)
+                "next_segment_index": 1    // points to next segment (when still far)
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "segment_index": 1,
+        "from": { "name": "BTM Layout", "lat": 12.91, "lng": 77.61 },
+        "direct_options": [ ... ],       // from BTM Layout → Lalbagh directly
+        "destinations": [ ... ]           // nearby stops from BTM Layout
+      }
+    ],
+    "total_segments": 2
+  }
+}
+```
+
+**Processing pipeline:**
+
+```
+1. Build segment 0 from source location:
+   a. Calculate direct distance to destination
+   b. Add direct options (walk, cab, auto, bike filtered by budget/capacity)
+   c. Find nearby bus stops (1km radius, max 6)
+   d. Find nearby metro stations (2km radius, max 4)
+   e. Find nearby railway stations (15km radius, max 3, only if long-distance)
+   f. For each stop: add reach_options (walk + rides to reach stop)
+   g. For each stop: add transit_options (buses, metro, trains going toward dest)
+   h. For each transit_option: add final_options if arrival is within 2km of dest
+
+2. Collect all transit_option arrival points that are still >2km from dest
+3. Build segment 1, 2, ... (up to max_depth) from those arrival points:
+   a. Same as step 1 but from the transit arrival location
+   b. Each transit_option gets `next_segment_index` linking to next segment
+   
+4. Return flat segments array with next_segment_index linking
+```
+
+**Key data fields per transit_option:**
+- `final_options[]` — walk + rides from transit arrival to dest (when arrival ≤ 2km from dest)
+- `next_segment_index: number` — points to the next segment (when arrival > 2km from dest)
+- `bus_times[]` — GTFS departure timings for bus routes
+- `departure_time / arrival_time` — train schedule times
+- `route_number` — bus/train number
+- `transit_type` — "bus", "metro", or "train"
+
 ### 6.2 Complete Endpoint List
 
 | Method | Path | Description | Parameters |
@@ -624,8 +710,9 @@ budget (optional)
 | GET | `/api/routes/kia-routes` | List KIA routes | — |
 | GET | `/api/routes/transit-fares` | Get fare slabs | — |
 | GET | `/api/routes/live-prices` | Ride price estimates | `source`, `dest`, `mode` |
+| GET | `/api/routes/all-segments` | All chained segments | `from_lat/lng/name`, `dest_lat/lng/name`, `group_size`, `budget`, `max_depth` |
 | GET | `/api/routes/mini-path-options` | Legacy mini-path | `source_lat/lng`, `dest_lat/lng`, `group_size` |
-| GET | `/api/routes/segment-step` | Segment builder step | `from_lat/lng/name`, `dest_lat/lng/name`, `group_size`, `budget` |
+| GET | `/api/routes/segment-step` | Legacy segment step | `from_lat/lng/name`, `dest_lat/lng/name`, `group_size`, `budget` |
 | GET | `/api/routes/news` | Travel news | `source_name`, `dest_name` |
 | GET | `/api/routes/traffic-overlay` | Traffic GeoJSON | — |
 | GET | `/api/search/places` | Search places | `q`, `lat`, `lng` |
@@ -776,126 +863,217 @@ Each route is scored on multiple criteria:
 
 ---
 
-## 8. Segment Builder
+## 8. Segment Builder (Progressive Multi-Column)
 
 ### 8.1 Overview
 
-The segment builder lets users construct a custom multi-stop journey step by step, choosing between all available transport options at each stage.
+The segment builder lets users construct a custom journey **progressively** through a multi-column UI. Each column represents a segment in the journey, and columns appear one by one as the user makes selections. The number of columns varies based on journey complexity:
+- **Short journey** (<2km): Just 1 column (direct walk/cab)
+- **Medium journey** (2-15km): 3-4 columns (reach stop → transit → final mile)
+- **Long journey** (>15km, out-of-city): 4-6 columns with multiple transit hops + trains
 
-### 8.2 Architecture
+### 8.2 Architecture (Current - July 2026)
 
-**Backend:** `get_segment_step_options(from_lat, from_lng, from_name, dest_lat, dest_lng, dest_name, group_size, budget)` in `transit_service.py`
+**Backend:** `get_all_segments()` in `transit_service.py` — generates ALL chained segments at once in a flat array, linked via `next_segment_index`.
 
-**Endpoint:** `GET /api/routes/segment-step` in `routes.py` (lines 384-449)
+**Endpoint:** `GET /api/routes/all-segments` → returns `{ status, data: { source, dest, segments[], total_segments } }`
 
-**Frontend:** Segment building state in `AToBPanel.tsx`:
-- `segmentStep: SegmentStepData` — current step options
-- `segmentPath: SegmentStepOption[]` — chosen segments
+**Frontend:** `SegmentPanel.tsx` — renders progressive columns:
+- `chainState.activeSegIdx` — tracks which segment is currently active
+- `chainState.selectedDest` — which stop user picked in the current segment
+- `chainState.selectedTransit` — which transit option user picked
+- `chainState.selectedFinal` — which final mile option user picked
 
-### 8.3 Step Data Structure
+### 8.3 Data Structure
 
-Each step returns:
+Each segment is self-contained and reusable:
 
 ```json
 {
-  "from": { "lat": 12.97, "lng": 77.59, "name": "Your Location" },
-  "dest": { "lat": 12.93, "lng": 77.61, "name": "Destination" },
-  "direct_options": [ ... ],        // Walk + all ride types to destination
-  "via_stops": [
+  "segment_index": 0,
+  "from": { "name": "MG Road", "lat": 12.97, "lng": 77.59 },
+  "direct_options": [
+    { "mode": "walk", "fare": 0, "duration_minutes": 30, ... },
+    { "mode": "cab", "fare": 176, "duration_minutes": 8, ... }
+  ],
+  "destinations": [
     {
-      "stop": { "name": "Majestic", "lat": 12.97, "lng": 77.57, "type": "metro" },
-      "reach_options": [ ... ],      // How to get TO this stop
-      "from_stop_options": [ ... ]   // What to do FROM this stop
+      "stop": { "name": "Cubbon Park", "lat": 12.97, "lng": 77.59, "type": "bus" },
+      "distance_from_current": 0.3,
+      "reach_options": [
+        { "mode": "walk", "from": "MG Road", "to": "Cubbon Park", "fare": 0, "arrives_at_stop": true, ... },
+        { "mode": "cab", "from": "MG Road", "to": "Cubbon Park", "fare": 42, "arrives_at_stop": true, ... }
+      ],
+      "transit_options": [
+        {
+          "mode": "metro",
+          "from": "Cubbon Park",
+          "to": "BTM Layout",
+          "fare": 42,
+          "arrives_at_stop": true,
+          "transit_type": "metro",
+          "final_options": [ ... ],           // last-mile from BTM Layout to dest
+          "next_segment_index": 1             // if still >2km from dest, link to next segment
+        }
+      ]
     }
   ]
 }
 ```
 
-### 8.4 Ride Types Available
+### 8.4 Segment Chaining Logic
 
-All with per-person pricing × group_size, filtered by capacity:
+When a transit option's arrival point is **>2km from destination**:
+- A new segment is built from that arrival point
+- The transit option gets `next_segment_index: N`
+- The new segment has its own `from`, `direct_options`, `destinations[]`, etc.
+- The flat segments array can be navigated by following `next_segment_index`
 
-| Mode | Label | Base Fare | Per KM | Capacity | Icon |
-|------|-------|-----------|--------|----------|------|
-| `cab` | Uber Go / Ola Mini | ₹25 | ₹14/km | 4 | 🚕 |
-| `cab_xl` | Uber XL / Ola XL | ₹40 | ₹20/km | 6 | 🚐 |
-| `auto` | Auto Rickshaw | ₹15 | ₹10/km | 3 | 🛺 |
-| `bike` | Uber Moto / Rapido | ₹10 | ₹6/km | 1 | 🏍️ |
-| `cab_women` | Uber for Women | ₹25 | ₹14/km | 4 | 👩 |
-| `cab_pet` | Uber Pet | ₹30 | ₹17/km | 4 | 🐾 |
+When a transit option's arrival point is **≤2km from destination**:
+- `final_options[]` is populated with walk + rides from arrival to destination
+- No next segment is generated
 
-**Capacity filtering:** If `group_size > capacity`, the option is hidden. E.g., a group of 5 won't see Auto (capacity 3) or Bike (capacity 1).
+### 8.5 Column Layout (Frontend)
 
-### 8.5 Transit Stop Types
-
-| Type | Source | Search Radius | Max Shown |
-|------|--------|---------------|-----------|
-| `bus` | `db.find_nearby_bus_stops()` | 1.0 km | 4 |
-| `metro` | `db.find_nearby_metro_stations()` | 2.0 km | 4 |
-
-Each stop provides:
-- `reach_options`: Walk (≤2km) + all ride types to reach that stop
-- `from_stop_options`: Transit rides (Bus/Metro) to destination area + all ride types direct to destination
-
-### 8.6 Transit Ride Options
-
-**Bus rides:** Between nearby source stop and destination-area stops, using BMTC fare calculation:
-- `per_person = max(10, get_bmtc_ordinary_fare(distance))`
-
-**Metro rides:** Between nearby source station and destination-area stations:
-- `per_person = max(15, distance × 3)`
-
-### 8.7 Frontend Flow
+The SegmentPanel renders columns left to right as user makes selections:
 
 ```
-User clicks "Segment Builder" button
-  → handleStartSegmentBuilding()
-    → fetchStepFrom(source_lat, source_lng, source_name)
-      → GET /api/routes/segment-step?from=source&...
-      → setSegmentStep(response.step)
-    
-User sees:
-  [Direct Options] [Transit Stop 1] [Transit Stop 2] ...
-
-User clicks "Walk to Majestic" (reach_option)
-  → handlePickSegmentOption(option)
-    → setSegmentPath([...prev, option])  // adds to path
-    → If option.arrives_at_stop == true:
-        fetchStepFrom(option.to_lat, option.to_lng, option.to)
-        // Loads next step from Majestic station
-    → Else (direct to destination):
-        setSegmentStep(null)  // route complete
-
-At next step from Majestic:
-  User sees options from Majestic to destination
-  → Repeat until destination reached
+┌─────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  ┌──────────────────┐
+│ 🚕 DIRECT       │  │ 🚏 REACH A STOP      │  │ 🚌 TRANSIT:        │  │ 🏁 FINAL MILE    │
+│ (from segment)  │  │ (from segment)        │  │ Cubbon Park        │  │ to Lalbagh       │
+│                 │  │                       │  │                    │  │                  │
+│ Walk 30min ₹0   │  │ 📍 From: MG Road      │  │ Metro to BTM Layt  │  │ Walk 10min ₹0    │
+│ Cab 8min ₹176   │  │ ┌─────────────────┐   │  │                   │  │ Auto 5min ₹25    │
+│ Auto 22min ₹120 │  │ │ Cubbon Park      │   │  │ 🏁 5 final opts    │  │ Cab 3min ₹42     │
+│                 │  │ │ 0.3km away       │   │  │                    │  │                  │
+│                 │  │ │ Walk 4min ₹0     │   │  │                    │  │                  │
+│                 │  │ │ Cab 2min ₹42     │   │  │                    │  │                  │
+│                 │  │ └─────────────────┘   │  │                    │  │                  │
+│                 │  │ ┌─────────────────┐   │  │                    │  │                  │
+│                 │  │ │ Vidhana Soudha   │   │  │                    │  │                  │
+│                 │  │ │ (metro) 1.2km    │   │  │                    │  │                  │
+│                 │  │ │ Walk 14min ₹0    │   │  │                    │  │                  │
+│                 │  │ └─────────────────┘   │  │                    │  │                  │
+└─────────────────┘  └──────────────────────┘  └────────────────────┘  └──────────────────┘
 ```
 
-### 8.8 Map Integration
+**Column visibility rules:**
+- **Column 0 (DIRECT):** Always shown when segment has direct_options
+- **Column 1 (REACH):** Always shown when segment has destinations
+- **Column 2 (TRANSIT):** Appears when user selects a destination → shows its transit_options
+- **Column 3 (FINAL):** Appears when user selects a transit with final_options
+- **Next Segment columns:** When transit has `next_segment_index`, clicking it switches to that segment's columns (fresh Column 0-1-2 for the new "from" location)
 
-- Each chosen segment renders as a colored polyline (cycling through SEGMENT_COLORS)
-- Transit stops are shown as CircleMarkers on the map:
-  - Green circles for metro stations
-  - Blue circles for bus stops
-  - Popup shows stop name
-- Hovering over an option highlights its path in yellow
+### 8.6 Frontend State Machine
 
-### 8.9 State Reset
+```
+IDLE: no data loaded
+  → fetch all-segments API → DATA_LOADED
 
-- User can reset and start over at any time
-- Each step's options are independently fetched and cached
-- Double-call prevention via `segmentBuildingRef` ref
+DATA_LOADED:
+  Shows Column 0 (Direct) + Column 1 (Destinations)
+  User clicks reach_option → DEST_SELECTED
 
-### 8.10 What's Missing / Improvements Needed
+DEST_SELECTED:
+  Shows Column 2 (Transit options for that stop)
+  User clicks transit_option →
+    if has next_segment_index → SEGMENT_CHAIN (switch to next segment)
+    if has final_options → TRANSIT_SELECTED
 
-1. **Editable segments**: User cannot go back and change a previous segment's choice
-2. **More transit stop info**: Show bus route numbers and metro lines at each stop
-3. **Compare vs direct routes**: Show how the custom-built route compares to the automatically planned ones
-4. **Intermediate stops**: Allow adding intermediate destinations (not just transit stops)
-5. **Timeline view**: Show the route as a timeline with departure/arrival times
-6. **GTFS schedule-based transit**: Currently bus/metro times are estimated (distance/speed), not based on actual GTFS schedules
-7. **Real-time arrival data**: No GTFS-RT integration yet
-8. **Path builder improvement**: After building segments, automatically find the best combined transit route suggestion
+TRANSIT_SELECTED:
+  Shows Column 3 (Final mile options)
+  User clicks final_option → JOURNEY_COMPLETE
+
+SEGMENT_CHAIN:
+  activeSegIdx updates to next_segment_index
+  Shows NEW Column 0 (Direct from new from-location)
+  + Column 1 (Destinations near new location)
+  User repeats the flow
+
+JOURNEY_COMPLETE:
+  Shows full journey summary with timeline
+  "Start Journey" button enables GPS tracking
+```
+
+### 8.7 Go Back / Reset
+
+The user can go back at any point:
+- **From Final →** deselects final, shows transit options again
+- **From Transit →** deselects transit, shows destinations again
+- **From Dest →** deselects dest, shows all destinations
+- **From segment N →** goes back to segment N-1
+
+### 8.8 Map Path Display
+
+Each selected option renders on the map:
+- **Colored polylines** cycling through SEGMENT_COLORS
+- **Circle markers** at transit stops
+- **Yellow highlight** on hovered option
+- Path coordinates are either OSRM real roads or interpolated paths
+
+### 8.9 Ride Types & Pricing
+
+All rides priced per-person × group_size, filtered by capacity:
+
+| Mode | Label | Base | Per KM | Capacity |
+|------|-------|------|--------|----------|
+| `walk` | Walk | ₹0 | — | ∞ |
+| `cab` | Uber Go / Ola Mini | ₹25 | ₹14/km | 4 |
+| `cab_xl` | Uber XL / Ola XL | ₹40 | ₹20/km | 6 |
+| `auto` | Auto Rickshaw | ₹15 | ₹10/km | 3 |
+| `bike` | Uber Moto / Rapido | ₹10 | ₹6/km | 1 |
+
+**Live pricing overlay:** LLM agent fetches real-time Ola/Uber/Rapido prices (8s timeout). If available, these override the calculated fares and show provider name + ETA.
+
+### 8.10 Transit Types
+
+| Type | Source | Search Radius | Max |
+|------|--------|---------------|-----|
+| `bus` | `find_nearby_bus_stops()` | 1.0 km | 6 |
+| `metro` | `find_nearby_metro_stations()` | 2.0 km | 4 |
+| `railway` | `find_nearby_railway_stations()` | 15 km | 3 |
+
+**Transit pricing:**
+- **Bus:** `max(6, get_bmtc_ordinary_fare(distance))` per person using slab-based fares
+- **Metro:** `distance × ₹3` per person, minimum ₹15
+- **Train:** `distance × ₹0.8` per person, minimum ₹15
+
+**Transit filtering:**
+- Budget check: skip if `fare × group_size > budget`
+- Bus routes: only show when common routes exist between stop and dest-area stop
+- Metro: only when stop or dest supports metro connectivity
+- Train: only for long-distance journeys (>40km or outside Bengaluru)
+- GTFS bus timings: filtered by current time (shows next available buses)
+
+### 8.11 Custom Waypoints
+
+Users can add custom intermediate stops (not just transit stops):
+1. Type a place name in the search box
+2. Select from suggestions
+3. System fetches fresh segment data from that location
+4. New columns appear showing options from the custom waypoint
+
+### 8.12 GPS Live Tracking
+
+When journey is complete:
+1. User clicks "▶ Start Journey"
+2. Browser requests GPS permission (`watchPosition`)
+3. Green live marker appears on map
+4. Tracks user's progress in real-time
+5. Button shows "🟢 Tracking" while active
+
+### 8.13 What's Missing / Next Improvements
+
+1. **Multi-segment chaining isn't working for short routes** — transit options that arrive within 2km of dest show final_options but don't chain to next segment. Need to handle "transit to nearby area, then more transit" for all routes.
+2. **Transit options too few** — many bus stops show 0 transit options because no common bus routes found. Need fallback transit (metro, other buses).
+3. **Edit previous segment** — user cannot go back and change a choice without resetting.
+4. **Route comparison** — compare custom-built route vs auto-generated routes.
+5. **Schedule integration** — use GTFS stop_times for departure/arrival predictions.
+6. **Multiple route suggestions** — after each step, suggest 2-3 best continuations.
+7. **Time constraints** — "arrive by X" or "depart at Y" filtering.
+8. **Real-time transit** — GTFS-RT for live bus positions.
+9. **Intermediate destinations** — better support for non-transit waypoints.
+10. **Visual timeline** — Gantt-chart view of entire journey.
 
 ---
 
@@ -1177,101 +1355,140 @@ Used during initial data setup, not in the live application.
 
 ## 14. Roadmap & Future Work
 
-### 14.1 Short Term (Next Sprints)
+### 14.1 Recently Added Features (July 2026)
 
-#### P0 — Critical
+1. **Progressive multi-column segment UI** — Replaced old two-phase segment builder with progressive column layout (1 to N columns based on journey depth)
+2. **Chained segments** — Backend generates flat segments array with `next_segment_index` linking; transit arrival points become new segments
+3. **LLM live pricing overlay** — Real-time Ola/Uber/Rapido prices fetched via LLM agent and overlaid on direct options and reach options (8s timeout)
+4. **GPS live tracking** — "Start Journey" button triggers browser GPS; green live marker tracks position
+5. **Custom waypoints** — Search + add intermediate stops; fresh segment data fetched from custom location
+6. **GTFS bus timing expansion** — From 5 to 20 departure times per stop (100K stop times global limit)
+7. **Railway station integration** — Train transit options for long-distance routes with departure/arrival times
+8. **Parallel OSRM path fetching** — All option paths fetched via `asyncio.gather` for speed
+9. **Map resize on panel open/close** — `invalidateSize()` call when segment panel toggles
+10. **Budget/group-size filtering** — Applied at every transit and reach option
 
-1. **Route planning speed optimization**
-   - Preload GTFS data at startup (not lazy)
-   - Add connection pooling to OSRM client
-   - Reduce OSRM timeout from 5s to 3s
-   - Cache common OSRM routes locally
-   - Target: <15s for typical route plan
+### 14.2 Critical Issues to Fix Now
 
-2. **Segment builder enhancements**
-   - Allow editing/removing previous segment choices
-   - Show intermediate costs at each step
-   - Add "Auto-complete" to find best transit from current path
-   - Show bus route numbers and metro lines in stop details
-   - Display segment timelines
+#### P0 — Must Fix
+
+1. **Transit options too few** — Many bus stops show 0 transit options because no common routes found with dest-area stops. Need fallback: if no direct bus, show nearby metro connectivity, or other area buses, or at minimum a "no transit available" message.
+   - Fix: For bus stops without common routes, search for nearby metro stations (1km from stop) and show metro transit instead.
+   - Fix: For ANY stop type, always generate at minimum any transit option (don't let transit_options be empty).
+
+2. **Chained segments not generating for short routes** — When transit arrival is within 2km of dest, only final_options are generated. But user may want to see MORE transit from that area going closer. Need to generate next segment even when close, if there are more transit options available.
+   - Fix: Change threshold from 2km to 0.5km for chaining, or always generate next segment when any transit option exists from the arrival point.
+
+3. **Backend `needs_next_segment` flag leaking** — This backend-only key should be stripped before returning to frontend.
+
+#### P1 — High Priority
+
+4. **GTFS loading too slow** — 41s synchronous at startup. Need async loading or progress indicator.
+5. **OSRM timeout handling** — Some paths fail silently. Need retry logic with fallback interpolation.
+6. **Live price reliability** — 8s LLM call sometimes times out. Need caching and fallback pricing.
+7. **Frontend state machine bugs** — HandlePickTransit/HandleGoBack logic needs verification with chained segments.
+8. **Transit column should always show** — Even when transit_options is empty, show a message instead of hiding the column.
+
+### 14.3 Short Term (Next Sprints)
+
+#### P2 — Important
+
+1. **Segment builder — edit mode**
+   - Allow clicking a previous segment to change its option
+   - Recalculate downstream when a segment changes
+   - Keep all other segments intact
+
+2. **Route comparison**
+   - After building a custom route, compare score against auto-generated direct routes
+   - Show time/cost differences
+   - Highlight which is better and why
 
 3. **GTFS schedule integration**
    - Load GTFS stop_times.txt for actual bus timings
    - Show departure/arrival times for bus legs
    - Filter routes by time of day
+   - Show "next 3 buses" with actual times
 
-#### P1 — High
+4. **Better transit coverage**
+   - For every bus stop, find alternative transit if no direct bus:
+     - Walk to nearest metro station → metro transit
+     - Walk to another bus stop with connectivity → bus transit
+   - Add KIA bus routes as transit options (for airport routes)
+   - Add auto-rickshaw as transit (not just reach)
 
-4. **Search quality improvements**
-   - Restrict OSM Nominatim to Bengaluru region (current India bbox too broad)
-   - Add Bangalore-specific place synonyms database
+5. **UI/UX polish**
+   - Mobile-responsive column layout
+   - Loading skeletons for columns
+   - Smooth column appearance animation
+   - Route comparison table view
+   - Share route link
+
+6. **Search quality**
+   - Restrict OSM Nominatim to Bengaluru region
+   - Add Bangalore-specific place synonyms
    - Prioritize transit stops in search results
 
-5. **Path enrichment reliability**
-   - Add OSRM request queuing with 200ms delay between calls
-   - Cache more aggressively (persistent disk cache)
-   - Add more interpolated path points (12 → 24 for smoother curves)
-
-6. **Ride price estimates**
-   - Integrate with Ola/Uber affiliate APIs if available
-   - Add Rapido bike taxi pricing
+7. **Ride price estimates**
+   - Cache LLM price results (5 min TTL)
    - Show price ranges instead of single estimates
    - Add women-only ride options
 
-#### P2 — Medium
-
-7. **UI/UX polish**
-   - Mobile-responsive layout
-   - Dark mode consistency
-   - Loading skeletons instead of spinners
-   - Route comparison table view
-   - Share route link functionality
+#### P3 — Medium Priority
 
 8. **Multi-stop trip planning**
    - Complete the TripPanel component
    - Support 3+ destination trips
    - Optimize visit order for multi-stop routes
 
-9. **Offline mode**
-   - Cache transit data in IndexedDB
-   - Basic route planning without backend
-   - PWA support
+9. **Time constraints**
+   - "Arrive by X" or "depart at Y" filtering
+   - Show estimated arrival times based on current time
+   - Filter out options that miss the deadline
 
-### 14.2 Long Term (Future Versions)
+10. **Multiple route suggestions per step**
+    - After each step, suggest 2-3 best continuations based on TOPSIS
+    - Show score breakdown for each option
 
-#### P3 — Nice to Have
+11. **Offline mode**
+    - Cache transit data in IndexedDB
+    - Basic route planning without backend
+    - PWA support
 
-10. **Real-time features**
+### 14.4 Long Term (Future Versions)
+
+#### P4 — Nice to Have
+
+12. **Real-time features**
     - GTFS-RT for live bus positions
     - Live metro train tracking
     - Real-time traffic from Google Maps API
     - Live ride availability (not just prices)
 
-11. **Advanced routing**
-    - Isochrone maps (show reachable areas within N minutes)
+13. **Advanced routing**
+    - Isochrone maps (reachable areas within N minutes)
     - Environmentally-friendly routing (carbon emissions)
     - Accessibility routing (wheelchair-friendly)
     - Scheduled departure optimization
 
-12. **User features**
+14. **User features**
     - User accounts with saved routes
     - Route history and favorites
     - Recurring commute planning
     - Crowd-sourced route feedback
 
-13. **Data expansion**
+15. **Data expansion**
     - Add local train (Bengaluru suburban)
     - Add auto-rickshaw stand locations
     - Add cycle sharing stations
     - Expand to other Indian cities (Chennai, Hyderabad, Mumbai)
 
-14. **ML & AI improvements**
+16. **ML & AI improvements**
     - Train TOPSIS weights from user feedback
     - Predictive traffic modeling
     - Personalized route recommendations
     - Anomaly detection (unusual delays, route disruptions)
 
-### 14.3 Infrastructure Improvements
+### 14.5 Infrastructure Improvements
 
 | Area | Current | Target |
 |------|---------|--------|
@@ -1283,23 +1500,6 @@ Used during initial data setup, not in the live application.
 | CI/CD | None | GitHub Actions |
 | Documentation | This file | API docs + component storybook |
 
-### 14.4 Segment Builder — Detailed Roadmap
-
-**Current state:** ✅ Working — user can build multi-stop routes step-by-step with all transport options, filtered by group size and budget
-
-**Next improvements in order:**
-
-1. **Edit mode** — Allow clicking a previous segment to change its option, then recalculate downstream
-2. **Route comparison** — After building a custom route, compare its score against the auto-generated direct routes
-3. **Intermediate destination support** — Allow adding actual places (not just transit stops) as waypoints
-4. **Schedule integration** — Show departure/arrival times if GTFS stop_times are loaded
-5. **Multiple route suggestions** — After each step, suggest 2-3 best continuations based on TOPSIS
-6. **Price breakdown** — Show running total + per-person with a progress bar against budget
-7. **Time constraint** — Allow setting "arrive by" or "depart at" time
-8. **Saved segments** — Allow saving a built route as a template for future use
-9. **Visual timeline** — Gantt-chart style view of the entire journey timeline
-10. **Map integration** — Show only the relevant segment path on hover, highlight stops more prominently
-
 ---
 
 ## 15. Appendix: File Reference
@@ -1309,15 +1509,15 @@ Used during initial data setup, not in the live application.
 | File | Lines | Purpose |
 |------|-------|---------|
 | `backend/main.py` | 54 | App entry point, CORS, routers |
-| `backend/api/routes.py` | 570 | Route planning endpoints |
+| `backend/api/routes.py` | ~690 | Route planning + all-segments endpoints |
 | `backend/api/search.py` | ~200 | Search & discovery endpoints |
-| `backend/services/transit_service.py` | 1027 | Core route engine, OSRM, segment builder |
-| `backend/services/gtfs_service.py` | 141 | BMTC GTFS loader |
+| `backend/services/transit_service.py` | ~1800 | Core route engine, OSRM, chained segment builder |
+| `backend/services/gtfs_service.py` | ~200 | BMTC GTFS loader (100K stop times limit) |
 | `backend/services/geocoding.py` | ~450 | Place search + enrichment |
-| `backend/services/llm_agent.py` | ~300 | LLM orchestration |
+| `backend/services/llm_agent.py` | ~350 | LLM orchestration (live pricing, recommendations) |
 | `backend/services/n8n_service.py` | ~150 | n8n webhook proxy |
 | `backend/services/images.py` | ~50 | Wikipedia image fetcher |
-| `backend/core/database.py` | ~300 | In-memory transit DB |
+| `backend/core/database.py` | ~300 | In-memory transit DB (bus/metro/railway) |
 | `backend/core/config.py` | 49 | Settings from .env |
 | `backend/models/transit.py` | ~100 | Pydantic models |
 
@@ -1326,16 +1526,17 @@ Used during initial data setup, not in the live application.
 | File | Lines | Purpose |
 |------|-------|---------|
 | `frontend/src/App.tsx` | ~50 | Root component |
-| `frontend/src/pages/MainPage.tsx` | ~200 | App orchestrator |
-| `frontend/src/components/AToBPanel.tsx` | 886 | Main route panel |
-| `frontend/src/components/MapView.tsx` | 362 | Leaflet map |
+| `frontend/src/pages/MainPage.tsx` | ~313 | App orchestrator (GPS tracking, map resize) |
+| `frontend/src/components/SegmentPanel.tsx` | ~620 | Progressive multi-column segment UI |
+| `frontend/src/components/AToBPanel.tsx` | ~500 | Main A→B route panel |
+| `frontend/src/components/MapView.tsx` | ~400 | Leaflet map (segment paths, live marker) |
 | `frontend/src/components/SearchPanel.tsx` | ~250 | Search UI |
 | `frontend/src/components/DiscoveryPanel.tsx` | ~150 | Place details |
 | `frontend/src/components/NewsOverlay.tsx` | ~100 | News display |
 | `frontend/src/components/TripPanel.tsx` | ~30 | Trip stub |
-| `frontend/src/services/api.ts` | 122 | API client |
-| `frontend/src/types/index.ts` | 244 | TypeScript types |
-| `frontend/src/utils/helpers.ts` | 119 | UI formatters |
+| `frontend/src/services/api.ts` | ~137 | API client (typed responses) |
+| `frontend/src/types/index.ts` | ~290 | TypeScript types (Segment, TransitOption, etc.) |
+| `frontend/src/utils/helpers.ts` | ~120 | UI formatters (mode icons, duration, rupees) |
 
 ### 15.3 ML & Utility Files
 
