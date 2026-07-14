@@ -25,6 +25,13 @@ app.include_router(routes.router)
 
 @app.on_event("startup")
 async def startup():
+    import os
+    test_time = os.environ.get("VOYAGER_TEST_TIME")
+    if test_time:
+        from backend.services.gtfs_service import set_test_time
+        set_test_time(test_time)
+        print(f"[MAIN] Test time override: {test_time}")
+
     db.initialize()
     # Preload GTFS data synchronously (takes ~40s once)
     from backend.services.transit_service import _ensure_gtfs

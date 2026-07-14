@@ -396,7 +396,10 @@ async def get_all_segments(
                     if not fopt.get("path") and fopt.get("from_lat") and fopt.get("to_lat") and fopt.get("mode") in driving_modes:
                         path_tasks.append(_fetch_osrm(fopt, "driving"))
     if path_tasks:
-        await asyncio.gather(*path_tasks)
+        try:
+            await asyncio.wait_for(asyncio.gather(*path_tasks), timeout=20.0)
+        except:
+            pass
 
     # Apply live prices if LLM returned them
     live_prices = await llm_task

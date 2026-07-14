@@ -1,9 +1,16 @@
 import json
 import csv
 import os
+import math
 import pandas as pd
-from geopy.distance import geodesic
 from backend.core.config import settings
+
+def _haversine(lat1, lng1, lat2, lng2):
+    R = 6371
+    dlat = (lat2 - lat1) * math.pi / 180
+    dlng = (lng2 - lng1) * math.pi / 180
+    a = math.sin(dlat/2)**2 + math.cos(lat1*math.pi/180) * math.cos(lat2*math.pi/180) * math.sin(dlng/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
 
 class TransitDatabase:
     _instance = None
@@ -79,7 +86,7 @@ class TransitDatabase:
                         nxt = self._metro_by_code.get(sc_b, {})
                         nxt_lat, nxt_lng = nxt.get("lat", 0), nxt.get("lng", 0)
                         cum_dist += next_s.get("distance_to_next_km", 
-                            geodesic((nlat, nlng), (nxt_lat, nxt_lng)).km)
+                             _haversine(nlat, nlng, nxt_lat, nxt_lng))
                         if sc1 != sc_b:
                             self._metro_distance_cache[(sc1, sc_b)] = round(cum_dist, 2)
 
@@ -90,7 +97,7 @@ class TransitDatabase:
             df.columns = [c.strip() for c in df.columns]
             for idx, row in df.iterrows():
                 stop_id = str(idx)
-                name = row.get("Stop Name", "")
+                name = str(row.get("Stop Name", ""))
                 lat = float(row.get("Latitude", 0))
                 lng = float(row.get("Longitude", 0))
                 if lat == 0 and lng == 0 or not name:
@@ -99,9 +106,14 @@ class TransitDatabase:
                 routes_list = []
                 if isinstance(routes_raw, str) and routes_raw.startswith("{"):
                     try:
-                        routes_list = list(json.loads(routes_raw.replace("'", "\"").replace("None", "null")).keys())
+                        import ast
+                        routes_dict = ast.literal_eval(routes_raw)
+                        routes_list = list(routes_dict.keys())
                     except:
-                        pass
+                        try:
+                            routes_list = list(json.loads(routes_raw.replace("'", "\"").replace("None", "null")).keys())
+                        except:
+                            pass
                 self.bus_stops[stop_id] = {
                     "stop_id": stop_id,
                     "name": name,
@@ -163,7 +175,7 @@ class TransitDatabase:
     def find_nearby_bus_stops(self, lat: float, lng: float, radius_km: float = 1.0) -> list:
         results = []
         for stop_id, stop in self.bus_stops.items():
-            dist = geodesic((lat, lng), (stop["lat"], stop["lng"])).km
+            dist = _haversine(lat, lng, stop["lat"], stop["lng"])
             if dist <= radius_km:
                 results.append({**stop, "distance_km": round(dist, 3)})
         results.sort(key=lambda x: x["distance_km"])
@@ -178,7 +190,7 @@ class TransitDatabase:
     def find_nearby_railway_stations(self, lat: float, lng: float, radius_km: float = 30.0) -> list:
         results = []
         for stn in self.railway_stations:
-            dist = geodesic((lat, lng), (stn["lat"], stn["lng"])).km
+            dist = _haversine(lat, lng, stn["lat"], stn["lng"])
             if dist <= radius_km:
                 results.append({**stn, "distance_km": round(dist, 3)})
         results.sort(key=lambda x: x["distance_km"])
@@ -200,17 +212,16 @@ class TransitDatabase:
                     if s2["name"].lower() == stn_b_name.lower():
                         if s["line"] == s2["line"]:
                             return abs(s2["sequence"] - s["sequence"]) * 1.2
-        return geodesic(
-            (next((s["lat"] for s in self.metro_stations if s["name"].lower() == stn_a_name.lower()), 0),
-             next((s["lng"] for s in self.metro_stations if s["name"].lower() == stn_a_name.lower()), 0)),
-            (next((s["lat"] for s in self.metro_stations if s["name"].lower() == stn_b_name.lower()), 0),
-             next((s["lng"] for s in self.metro_stations if s["name"].lower() == stn_b_name.lower()), 0))
-        ).km
+        a_s = next((s for s in self.metro_stations if s["name"].lower() == stn_a_name.lower()), {})
+        b_s = next((s for s in self.metro_stations if s["name"].lower() == stn_b_name.lower()), {})
+        if a_s and b_s:
+            return _haversine(a_s["lat"], a_s["lng"], b_s["lat"], b_s["lng"])
+        return 0
 
     def find_nearby_metro_stations(self, lat: float, lng: float, radius_km: float = 2.0) -> list:
         results = []
         for station in self.metro_stations:
-            dist = geodesic((lat, lng), (station["lat"], station["lng"])).km
+            dist = _haversine(lat, lng, station["lat"], station["lng"])
             if dist <= radius_km:
                 results.append({**station, "distance_km": round(dist, 3)})
         results.sort(key=lambda x: x["distance_km"])

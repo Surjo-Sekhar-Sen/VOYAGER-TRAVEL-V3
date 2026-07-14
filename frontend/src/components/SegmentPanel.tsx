@@ -256,30 +256,38 @@ export default function SegmentPanel({
     const finalCount = opt.final_options?.length ?? 0
     const dwm = opt.dropoff_walk_min
     const dtd = opt.dropoff_to_dest_km
+    const transitT = opt.transit_type
     return (
       <div key={idx}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12 }}>{opt.icon || getModeIcon(opt.mode)}</span>
           <span style={{ fontWeight: 600, fontSize: 10, color: '#e2e8f0' }}>{opt.label || getModeLabel(opt.mode)}</span>
-          {routeNum && <span style={{ fontSize: 9, color: '#60a5fa', background: '#1e3a5f', padding: '1px 5px', borderRadius: 3, fontWeight: 700 }}>{routeNum}</span>}
+          {routeNum && <span style={{ fontSize: 9, color: '#60a5fa', background: '#1e3a5f', padding: '1px 5px', borderRadius: 3, fontWeight: 700, fontFamily: 'monospace' }}>{routeNum}</span>}
           {depOpt && arrOpt && <span style={{ fontSize: 8, color: '#a855f7' }}>🕐 {depOpt}→{arrOpt}</span>}
+          {transitT === 'train' && routeNum && <span style={{ fontSize: 8, color: '#a855f7' }}>🚆 #{routeNum}</span>}
         </div>
         <div style={{ fontSize: 8, color: '#64748b', marginTop: 1, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <span>{formatDuration(opt.duration_minutes)}</span>
           <span>{opt.distance_km?.toFixed(2)}km</span>
           <span style={{ color: '#fbbf24' }}>{formatRupees(opt.fare)} {opt.per_person ? `(${formatRupees(opt.per_person)}/pp)` : ''}</span>
           {cap && <span style={{ color: '#64748b' }}>👥{cap}</span>}
-          {dwm != null && dwm > 0 && opt.transit_type && <span style={{ color: '#22c55e' }}>🚶+{dwm}min to {opt.to ? opt.to.slice(0,15) : 'dest'}</span>}
+          {dwm != null && dwm > 0 && transitT && <span style={{ color: '#22c55e' }}>🚶+{dwm}min to destination</span>}
           {finalCount > 0 && <span style={{ color: '#22c55e' }}>🏁{finalCount} final opts</span>}
         </div>
+        {/* Bus timing display */}
         {routeNum && busTimes && busTimes.length > 0 && (
-          <div style={{ fontSize: 7, color: '#f59e0b', marginTop: 1, display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-            ⏰ {busTimes.slice(0, 3).map((bt: any, bi: number) => (
-              <span key={bi} style={{ background: '#1e3a5f', padding: '1px 3px', borderRadius: 2, color: '#fbbf24' }}>
+          <div style={{ fontSize: 7, color: '#f59e0b', marginTop: 1, display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span>⏰</span>
+            {busTimes.slice(0, 4).map((bt: any, bi: number) => (
+              <span key={bi} style={{ background: '#1e3a5f', padding: '1px 4px', borderRadius: 2, color: '#fbbf24', fontFamily: 'monospace', fontSize: 7 }}>
                 {bt.departure_time?.split(':').slice(0, 2).join(':')}
               </span>
             ))}
           </div>
+        )}
+        {/* AC / Non-AC label */}
+        {opt.mode === 'bus_ac_vajra' && (
+          <div style={{ fontSize: 7, color: '#60a5fa', marginTop: 1 }}>❄️ AC Vajra</div>
         )}
         {dwm != null && opt.next_segment_index != null && (
           <div style={{ fontSize: 7, color: '#8b5cf6', marginTop: 1 }}>
