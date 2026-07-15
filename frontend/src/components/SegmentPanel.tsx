@@ -10,6 +10,50 @@ const MODE_COLORS: Record<string, string> = {
   train: '#a855f7', custom: '#f59e0b',
 }
 
+function TransferColumnContent({ options, onPick, onHover, onLeave }: { options: TransitOption[]; onPick: (opt: TransitOption) => void; onHover?: (opt: TransitOption) => void; onLeave?: () => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {options.map((opt, oi) => (
+        <button key={oi}
+          onClick={() => onPick(opt)}
+          onMouseEnter={() => onHover?.(opt)}
+          onMouseLeave={() => onLeave?.()}
+          style={{
+            background: '#1a2332', border: '1px solid #2a3a4a', borderRadius: 6,
+            padding: '6px 8px', cursor: 'pointer', textAlign: 'left',
+            transition: 'all 0.15s',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+            <span style={{ fontSize: 9, color: '#94a3b8' }}>📍{opt.from?.slice(0, 18)}</span>
+            <span style={{ fontSize: 8, color: '#64748b' }}>→</span>
+            <span style={{ fontSize: 9, color: '#e2e8f0' }}>{opt.to?.slice(0, 20)}</span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 9, color: '#94a3b8' }}>
+            <span>{opt.route_number || opt.mode}</span>
+            <span>💰 {formatRupees(opt.fare)}</span>
+            <span>⏱ {formatDuration(opt.duration_minutes)}</span>
+            <span>📏 {opt.distance_km}km</span>
+          </div>
+          {opt.bus_times && opt.bus_times.length > 0 && (
+            <div style={{ fontSize: 7, color: '#60a5fa', marginTop: 2 }}>
+              {opt.bus_times.slice(0, 3).map((t: any, ti: number) => (
+                <span key={ti} style={{ marginRight: 4 }}>🕐{t.departure_time}</span>
+              ))}
+            </div>
+          )}
+          {opt.next_transit && opt.next_transit.length > 0 && (
+            <div style={{ fontSize: 7, color: '#f59e0b', marginTop: 2 }}>🔄 {opt.next_transit.length} more transfers</div>
+          )}
+          {opt.final_options && opt.final_options.length > 0 && (
+            <div style={{ fontSize: 7, color: '#22c55e', marginTop: 2 }}>🏁 {opt.final_options.length} final mile options</div>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 interface SegmentPanelProps {
   sourceLocation: [number, number]
   destLocation: [number, number]
@@ -38,13 +82,14 @@ export default function SegmentPanel({
   const [loading, setLoading] = useState(false)
   const [hoveredOption, setHoveredOption] = useState<SegmentStepOption | null>(null)
   const [builtPath, setBuiltPath] = useState<BuiltStep[]>([])
-  // Chained segment state: for each segment level we track selected dest + transit
+  // Chained segment state: tracks selected dest, transit, transfer chain, and final
   const [chainState, setChainState] = useState<{
     activeSegIdx: number
     selectedDest: SegmentDestination | null
     selectedTransit: TransitOption | null
+    transferChain: TransitOption[]
     selectedFinal: SegmentStepOption | null
-  }>({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, selectedFinal: null })
+  }>({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null })
   const [customInput, setCustomInput] = useState('')
   const [customSuggestions, setCustomSuggestions] = useState<PlaceResult[]>([])
   const [customLoading, setCustomLoading] = useState(false)
@@ -63,25 +108,27 @@ export default function SegmentPanel({
     getAllSegments(
       sourceLocation[0], sourceLocation[1], sourceName,
       destLocation[0], destLocation[1], destName,
-      groupSize, budget, 3
+      groupSize, budget, 1
     ).then(res => {
       if (res.data) setData(res.data)
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(err => {
+      console.error('All-segments error:', err)
+    }).finally(() => setLoading(false))
   }, [sourceLocation, sourceName, destLocation, destName, groupSize, budget])
 
   const handleReset = useCallback(() => {
     setBuiltPath([])
-    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, selectedFinal: null })
+    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null })
     setHoveredOption(null)
   }, [])
 
   const handlePickDirect = useCallback((opt: SegmentStepOption) => {
     setBuiltPath([{ opt, label: `Direct: ${opt.label || getModeLabel(opt.mode)}` }])
-    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, selectedFinal: opt })
+    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: opt })
   }, [])
 
   const handlePickReach = useCallback((dest: SegmentDestination, opt: SegmentStepOption) => {
-    setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: dest, selectedTransit: null, selectedFinal: null })
+    setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: dest, selectedTransit: null, transferChain: [], selectedFinal: null })
     setBuiltPath(prev => {
       const idx = chainState.activeSegIdx
       const filtered = prev.filter(s => s.opt.mode !== 'direct')
@@ -91,22 +138,29 @@ export default function SegmentPanel({
 
   const handlePickTransit = useCallback((opt: TransitOption) => {
     if (opt.next_segment_index != null && segments[opt.next_segment_index]) {
-      // Move to next segment — show that segment's destinations
-      setChainState({ activeSegIdx: opt.next_segment_index, selectedDest: null, selectedTransit: null, selectedFinal: null })
+      setChainState({ activeSegIdx: opt.next_segment_index, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null })
       setBuiltPath(prev => [...prev, { opt, label: `${opt.label || getModeLabel(opt.mode)} to ${opt.to}` }])
     } else if (opt.final_options && opt.final_options.length > 0) {
-      // Show final mile options
-      setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: chainState.selectedDest, selectedTransit: opt, selectedFinal: null })
+      if (opt.next_transit && opt.next_transit.length > 0) {
+        // Has both transfers and final mile — show transfers first
+        setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: chainState.selectedDest, selectedTransit: opt, transferChain: [], selectedFinal: null })
+      } else {
+        setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: chainState.selectedDest, selectedTransit: opt, transferChain: [], selectedFinal: null })
+      }
       setBuiltPath(prev => {
         const base = prev.slice(0, chainState.activeSegIdx + 1)
         return [...base, { opt, label: `${opt.label || getModeLabel(opt.mode)} to ${opt.to}` }]
       })
     } else {
-      // No next segment and no final options — just select it
-      setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: chainState.selectedDest, selectedTransit: opt, selectedFinal: null })
+      setChainState({ activeSegIdx: chainState.activeSegIdx, selectedDest: chainState.selectedDest, selectedTransit: opt, transferChain: [], selectedFinal: null })
       setBuiltPath(prev => [...prev, { opt, label: `${opt.label || getModeLabel(opt.mode)} to ${opt.to}` }])
     }
   }, [chainState.activeSegIdx, chainState.selectedDest, segments])
+
+  const handlePickTransfer = useCallback((opt: TransitOption) => {
+    setChainState(prev => ({ ...prev, transferChain: [...prev.transferChain, opt], selectedFinal: null }))
+    setBuiltPath(prev => [...prev, { opt, label: `Transfer: ${opt.label || getModeLabel(opt.mode)} to ${opt.to}` }])
+  }, [])
 
   const handlePickFinal = useCallback((opt: SegmentStepOption) => {
     setChainState(prev => ({ ...prev, selectedFinal: opt }))
@@ -114,19 +168,24 @@ export default function SegmentPanel({
   }, [destName])
 
   const handleGoBack = useCallback(() => {
-    const { activeSegIdx, selectedDest, selectedTransit, selectedFinal } = chainState
+    const { activeSegIdx, selectedDest, selectedTransit, transferChain, selectedFinal } = chainState
     if (selectedFinal) {
       setChainState(prev => ({ ...prev, selectedFinal: null }))
       setBuiltPath(prev => prev.slice(0, -1))
       return
     }
+    if (transferChain.length > 0) {
+      setChainState(prev => ({ ...prev, transferChain: prev.transferChain.slice(0, -1), selectedFinal: null }))
+      setBuiltPath(prev => prev.slice(0, -1))
+      return
+    }
     if (selectedTransit) {
-      setChainState(prev => ({ ...prev, selectedTransit: null, selectedFinal: null }))
+      setChainState(prev => ({ ...prev, selectedTransit: null, transferChain: [], selectedFinal: null }))
       setBuiltPath(prev => prev.slice(0, -1))
       return
     }
     if (selectedDest) {
-      setChainState(prev => ({ ...prev, selectedDest: null, selectedTransit: null, selectedFinal: null }))
+      setChainState(prev => ({ ...prev, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null }))
       setBuiltPath(prev => prev.slice(0, -1))
       return
     }
@@ -142,7 +201,7 @@ export default function SegmentPanel({
       if (parentSegIdx >= 0) {
         // Remove the transit step and all steps after it
         const enterIdx = builtPath.indexOf(enterStep)
-        setChainState({ activeSegIdx: parentSegIdx, selectedDest: enterOpt.selectedDest || null, selectedTransit: null, selectedFinal: null })
+        setChainState({ activeSegIdx: parentSegIdx, selectedDest: enterOpt.selectedDest || null, selectedTransit: null, transferChain: [], selectedFinal: null })
         setBuiltPath(prev => prev.slice(0, enterIdx))
         return
       }
@@ -150,7 +209,7 @@ export default function SegmentPanel({
     if (activeSegIdx > 0) {
       const fallbackIdx = segments.findIndex(s => s.segment_index === activeSegIdx - 1)
       if (fallbackIdx >= 0) {
-        setChainState({ activeSegIdx: fallbackIdx, selectedDest: null, selectedTransit: null, selectedFinal: null })
+        setChainState({ activeSegIdx: fallbackIdx, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null })
         setBuiltPath(prev => prev.slice(0, fallbackIdx + 1))
         return
       }
@@ -170,7 +229,7 @@ export default function SegmentPanel({
       arrives_at_stop: true, from_lat: sourceLocation[0], from_lng: sourceLocation[1],
       to_lat: place.lat, to_lng: place.lng,
     } as SegmentStepOption, label: `Custom: ${place.name}` }])
-    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, selectedFinal: null })
+    setChainState({ activeSegIdx: 0, selectedDest: null, selectedTransit: null, transferChain: [], selectedFinal: null })
     setLoading(true)
     getAllSegments(
       place.lat, place.lng, place.name,
@@ -325,11 +384,18 @@ export default function SegmentPanel({
       return <div style={{ textAlign: 'center', padding: 20, color: '#64748b', fontSize: 11 }}>⏳ Loading route options...</div>
     }
     if (!data) {
-      return <div style={{ textAlign: 'center', padding: 20, color: '#64748b', fontSize: 11 }}>Loading...</div>
+      return <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', fontSize: 11 }}>
+        ⚠️ No data received. The request may have timed out.
+      </div>
     }
 
     const cs = chainState
     const segLabel = data && data.total_segments > 1 ? ` (Seg ${cs.activeSegIdx + 1}/${data.total_segments})` : ''
+    const transitForFinal = cs.transferChain.length > 0 ? cs.transferChain[cs.transferChain.length - 1] : cs.selectedTransit
+    const currentTransit = cs.transferChain.length > 0 ? cs.transferChain[cs.transferChain.length - 1] : cs.selectedTransit
+    const parentForTransfers = cs.transferChain.length > 0
+      ? cs.transferChain[cs.transferChain.length - 1]
+      : cs.selectedTransit
 
     return (
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', overflowY: 'visible', paddingBottom: 4, alignItems: 'flex-start' }}>
@@ -456,14 +522,30 @@ export default function SegmentPanel({
             )
           )}
 
-          {/* COLUMN 3: FINAL MILE */}
-          {cs.selectedTransit && cs.selectedTransit.final_options && cs.selectedTransit.final_options.length > 0 && renderColumn(
+          {/* TRANSFER COLUMNS: recursive next_transit chain */}
+          {cs.selectedTransit && cs.selectedTransit.next_transit && cs.selectedTransit.next_transit.length > 0 && cs.transferChain.length === 0 && (() => {
+            const opts = cs.selectedTransit!.next_transit!
+            return renderColumn(
+              <TransferColumnContent options={opts} onPick={handlePickTransfer} onHover={setHoveredOption} onLeave={() => setHoveredOption(null)} />,
+              `🔄 TRANSFER ${cs.selectedTransit!.to}`, '#f59e0b', 280
+            )
+          })()}
+          {cs.transferChain.map((level, li) => {
+            if (!level.next_transit || level.next_transit.length === 0 || li < cs.transferChain.length - 1) return null
+            return renderColumn(
+              <TransferColumnContent options={level.next_transit} onPick={handlePickTransfer} onHover={setHoveredOption} onLeave={() => setHoveredOption(null)} />,
+              `🔄 TRANSFER ${level.to}`, '#f59e0b', 280
+            )
+          })}
+
+          {/* FINAL MILE */}
+          {transitForFinal && transitForFinal.final_options && transitForFinal.final_options.length > 0 && renderColumn(
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 9, fontWeight: 600, color: '#22c55e', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
-                🏁 <span>Final to {destName} from {cs.selectedTransit.to}</span>
-                <span style={{ fontSize: 8, color: '#64748b', marginLeft: 'auto' }}>{cs.selectedTransit.final_options.length} options</span>
+                🏁 <span>Final to {destName} from {transitForFinal.to}</span>
+                <span style={{ fontSize: 8, color: '#64748b', marginLeft: 'auto' }}>{transitForFinal.final_options.length} options</span>
               </div>
-              {cs.selectedTransit.final_options.map((opt, oi) => {
+              {transitForFinal.final_options.map((opt, oi) => {
                 const isSelected = cs.selectedFinal === opt
                 return (
                   <button key={oi}

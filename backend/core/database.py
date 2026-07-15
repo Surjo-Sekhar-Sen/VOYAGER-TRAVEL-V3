@@ -4,6 +4,7 @@ import os
 import math
 import pandas as pd
 from backend.core.config import settings
+from backend.core.spatial_index import SpatialIndex
 
 def _haversine(lat1, lng1, lat2, lng2):
     R = 6371
@@ -39,6 +40,15 @@ class TransitDatabase:
         self._load_bus_stops()
         self._load_kia_routes()
         self._load_railway_stations()
+
+        # Build spatial indexes for fast nearby-stop lookups
+        bus_items = [s for s in self.bus_stops.values() if isinstance(s, dict)]
+        self._bus_spatial = SpatialIndex()
+        self._bus_spatial.build(bus_items)
+        self._metro_spatial = SpatialIndex()
+        self._metro_spatial.build(self.metro_stations)
+        self._rail_spatial = SpatialIndex()
+        self._rail_spatial.build(self.railway_stations)
 
     def _load_transit_fares(self):
         path = os.path.join(settings.DATA_CACHE_DIR, "transit_fares.json")
@@ -173,13 +183,7 @@ class TransitDatabase:
         return results
 
     def find_nearby_bus_stops(self, lat: float, lng: float, radius_km: float = 1.0) -> list:
-        results = []
-        for stop_id, stop in self.bus_stops.items():
-            dist = _haversine(lat, lng, stop["lat"], stop["lng"])
-            if dist <= radius_km:
-                results.append({**stop, "distance_km": round(dist, 3)})
-        results.sort(key=lambda x: x["distance_km"])
-        return results[:20]
+        return self._bus_spatial.query(lat, lng, radius_km, max_results=20)
 
     def _load_railway_stations(self):
         path = os.path.join(settings.DATA_CACHE_DIR, "karnataka_railway_stations.json")
@@ -188,13 +192,7 @@ class TransitDatabase:
                 self.railway_stations = json.load(f)
 
     def find_nearby_railway_stations(self, lat: float, lng: float, radius_km: float = 30.0) -> list:
-        results = []
-        for stn in self.railway_stations:
-            dist = _haversine(lat, lng, stn["lat"], stn["lng"])
-            if dist <= radius_km:
-                results.append({**stn, "distance_km": round(dist, 3)})
-        results.sort(key=lambda x: x["distance_km"])
-        return results[:10]
+        return self._rail_spatial.query(lat, lng, radius_km, max_results=10)
 
     def get_metro_distance_between(self, stn_a_name: str, stn_b_name: str) -> float:
         code_a = code_b = None
@@ -219,24 +217,29 @@ class TransitDatabase:
         return 0
 
     def find_nearby_metro_stations(self, lat: float, lng: float, radius_km: float = 2.0) -> list:
-        results = []
-        for station in self.metro_stations:
-            dist = _haversine(lat, lng, station["lat"], station["lng"])
-            if dist <= radius_km:
-                results.append({**station, "distance_km": round(dist, 3)})
-        results.sort(key=lambda x: x["distance_km"])
-        return results
+        return self._metro_spatial.query(lat, lng, radius_km, max_results=50)
 
     def get_metro_line_path(self, from_name: str, to_name: str) -> list | None:
-        from_stn = None
-        to_stn = None
-        for s in self.metro_stations:
-            if s["name"].lower().strip() == from_name.lower().strip():
-                from_stn = s
-            if s["name"].lower().strip() == to_name.lower().strip():
-                to_stn = s
-        if not from_stn or not to_stn or from_stn.get("line") != to_stn.get("line"):
+        from_name_l = from_name.lower().strip()
+        to_name_l = to_name.lower().strip()
+        from_candidates = [s for s in self.metro_stations if s["name"].lower().strip() == from_name_l]
+        to_candidates = [s for s in self.metro_stations if s["name"].lower().strip() == to_name_l]
+        if not from_candidates or not to_candidates:
             return None
+        from_stn = to_stn = None
+        for fc in from_candidates:
+            for tc in to_candidates:
+                if fc.get("line") == tc.get("line") and fc.get("line") in self.metro_lines:
+                    from_stn = fc
+                    to_stn = tc
+                    break
+            if from_stn and to_stn:
+                break
+        if not from_stn or not to_stn:
+            from_stn = from_candidates[0]
+            to_stn = to_candidates[0]
+            if from_stn.get("line") != to_stn.get("line"):
+                return None
         line_name = from_stn["line"]
         line_stations = self.metro_lines.get(line_name, [])
         seq_from = from_stn["sequence"]

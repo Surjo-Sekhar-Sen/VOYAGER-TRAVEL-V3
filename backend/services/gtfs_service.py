@@ -214,13 +214,14 @@ class GTFSLoader:
 
             print(f"[GTFS] Loaded {stop_times_count} stop_times rows, {len(self._stop_times)} stops indexed")
 
-            # Build stop_name -> shape_ids index
+            # Build stop_name -> shape_ids index (all keys lowercase for case-insensitive lookups)
             for sname, (slat, slng, sid) in self._stops_by_name.items():
+                sk = sname.strip().lower()
                 for shape_id, stop_seqs in shape_stops.items():
                     if sid in stop_seqs:
-                        if sname not in self._stop_to_shapes:
-                            self._stop_to_shapes[sname] = []
-                        self._stop_to_shapes[sname].append((shape_id, stop_seqs[sid]))
+                        if sk not in self._stop_to_shapes:
+                            self._stop_to_shapes[sk] = []
+                        self._stop_to_shapes[sk].append((shape_id, stop_seqs[sid]))
 
             # Build route_short_name -> shapes (using trip_to_route mapping)
             for trip_id, shape_id in trip_shape_map.items():
@@ -280,8 +281,11 @@ class GTFSLoader:
         return None
 
     def get_shape_between_stops(self, from_name: str, to_name: str):
-        fk = from_name.lower().strip()
-        tk = to_name.lower().strip()
+        # Resolve names through _resolve_name for normalized GTFS keys, then lowercase for lookup
+        f_resolved = self._resolve_name(from_name)
+        t_resolved = self._resolve_name(to_name)
+        fk = f_resolved.strip().lower() if f_resolved else from_name.strip().lower()
+        tk = t_resolved.strip().lower() if t_resolved else to_name.strip().lower()
         f_stop = self._stop_to_shapes.get(fk, [])
         t_stop = self._stop_to_shapes.get(tk, [])
         if not f_stop or not t_stop:
@@ -470,42 +474,103 @@ class GTFSLoader:
 
     def find_stops_on_route_toward_dest(self, route_number: str, from_lat: float, from_lng: float,
                                          dest_lat: float, dest_lng: float, max_stops: int = 3):
-        """Find up to max_stops along a route that are between the stop and destination.
+        """Find up to max_stops along a route, ordered by actual GTFS shape sequence order.
         Returns list of {stop_name, lat, lng, distance_to_dest}."""
         key = route_number.strip().upper()
         shape_ids = self._route_shapes.get(key, [])
         if not shape_ids:
             return []
-        # Get all GTFS stop names from the by-route index (fast dict lookup, no full iteration)
+
+        # Get all unique stops for this route with their GTFS coordinates
+        route_entries = self._stop_times_by_route.get(key, [])
+        stops_on_route = {}
+        seen = set()
+        for dep_time, sname in route_entries:
+            sk = sname.strip().lower()
+            if sk not in seen:
+                seen.add(sk)
+                coords = self._stops_by_name.get(sname)
+                if coords:
+                    stops_on_route[sk] = (sname, coords[0], coords[1])
+        if not stops_on_route:
+            return []
+
+        # Find which GTFS stop on this route is closest to the source coordinates
+        from_sk = min(stops_on_route.keys(),
+            key=lambda sk: self._hav((stops_on_route[sk][1], stops_on_route[sk][2]), (from_lat, from_lng)))
+
+        # Get shape sequence entries for the source stop
+        from_shape_map = {}
+        for sid, seq in self._stop_to_shapes.get(from_sk, []):
+            from_shape_map[sid] = seq
+
+        if not from_shape_map:
+            return self._find_stops_euclidean_fallback(key, from_lat, from_lng, dest_lat, dest_lng, max_stops)
+
+        # Find all route stops that come AFTER the source stop in a common shape
+        stop_seqs = []  # [(seq, shape_id, lat, lng, display_name)]
+        for sk, (sname, slat, slng) in stops_on_route.items():
+            if sk == from_sk:
+                continue
+            stop_shape_map = {}
+            for sid, seq in self._stop_to_shapes.get(sk, []):
+                stop_shape_map[sid] = seq
+            common = set(from_shape_map.keys()) & set(stop_shape_map.keys())
+            if not common:
+                continue
+            shape_id = next(iter(common))
+            s_seq = stop_shape_map[shape_id]
+            f_seq = from_shape_map[shape_id]
+            if s_seq > f_seq:
+                stop_seqs.append((s_seq, shape_id, slat, slng, sname))
+
+        if not stop_seqs:
+            return self._find_stops_euclidean_fallback(key, from_lat, from_lng, dest_lat, dest_lng, max_stops)
+
+        # Sort by shape sequence number (actual stop order along the route)
+        stop_seqs.sort(key=lambda x: x[0])
+
+        result = []
+        for seq, sid, slat, slng, sname in stop_seqs[:max_stops]:
+            dist_to_dest = self._hav((slat, slng), (dest_lat, dest_lng))
+            result.append({
+                "stop_name": sname,
+                "lat": slat,
+                "lng": slng,
+                "distance_to_dest_km": round(dist_to_dest, 3)
+            })
+        return result
+
+    def _find_stops_euclidean_fallback(self, key: str, from_lat: float, from_lng: float,
+                                        dest_lat: float, dest_lng: float, max_stops: int = 3):
+        """Fallback: find stops using Euclidean distance when shape sequence data is unavailable."""
         route_entries = self._stop_times_by_route.get(key, [])
         stops_on_route = []
         seen = set()
         for dep_time, sname in route_entries:
-            if sname not in seen:
-                seen.add(sname)
+            sk = sname.strip().lower()
+            if sk not in seen:
+                seen.add(sk)
                 coords = self._stops_by_name.get(sname)
                 if coords:
                     stops_on_route.append((sname, coords[0], coords[1]))
         if not stops_on_route:
             return []
-        # Filter: only stops that are closer to destination than source
         from_dist = math.sqrt((dest_lat - from_lat)**2 + (dest_lng - from_lng)**2)
         candidates = []
         for sname, slat, slng in stops_on_route:
             sdist = math.sqrt((dest_lat - slat)**2 + (dest_lng - slng)**2)
-            # Must be closer to destination than from point
             if sdist < from_dist * 0.9:
                 candidates.append((sname, slat, slng, sdist))
-            # Also include stops that are further along route toward dest (by angle) even if not physically closer
             elif self._hav((from_lat, from_lng), (slat, slng)) > 0.2:
-                # Stop is more than 200m from source along route - include as candidate
                 candidates.append((sname, slat, slng, sdist))
         candidates.sort(key=lambda x: x[3])
         result = []
         seen = set()
         for sname, slat, slng, sdist in candidates[:max_stops]:
-            if sname not in seen:
-                seen.add(sname)
+            sk = sname.strip().lower()
+            if sk not in seen:
+                seen.add(sk)
                 result.append({"stop_name": sname, "lat": slat, "lng": slng, "distance_to_dest_km": round(self._hav((slat, slng), (dest_lat, dest_lng)), 3)})
         return result
 

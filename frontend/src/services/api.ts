@@ -4,7 +4,7 @@ import type { PlaceResult } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 60000,
+  timeout: 120000,
 })
 
 export async function searchPlaces(q: string, lat?: number, lng?: number, signal?: AbortSignal): Promise<SearchResponse> {

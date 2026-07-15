@@ -1,4 +1,5 @@
 import math, json, csv, os, asyncio
+import httpx
 from fastapi import APIRouter, Query
 from backend.models.transit import ATobRequest
 from backend.services.transit_service import transit_service
@@ -366,35 +367,52 @@ async def get_all_segments(
             return []
     llm_task = asyncio.create_task(_fetch_live_prices())
 
-    # Collect OSRM paths for non-transit options (direct cabs/auto/walk, reach, final mile)
-    # Bus transit uses interpolated paths (instant) — only metro/train get OSRM
-    osrm_sem = asyncio.Semaphore(15)
+    # Quick OSRM health check — skip all OSRM requests if server is down
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get("https://router.project-osrm.org/route/v1/driving/77.6,12.97;77.57,12.97?overview=false")
+            osrm_ok = r.status_code == 200
+    except:
+        osrm_ok = False
+
     path_tasks = []
-    async def _fetch_osrm(opt, profile):
-        async with osrm_sem:
-            try:
-                p = await transit_service.get_osrm_path_between(opt["from_lat"], opt["from_lng"], opt["to_lat"], opt["to_lng"], profile)
-                if p:
-                    opt["path"] = p
-            except:
-                pass
-    driving_modes = {"cab","cab_xl","cab_women","cab_pet","auto","bike"}
-    for seg in result.get("segments", []):
-        for opt in seg.get("direct_options", []):
-            if not opt.get("path") and opt.get("from_lat") and opt.get("to_lat") and opt.get("mode") in driving_modes:
-                path_tasks.append(_fetch_osrm(opt, "driving"))
-        for dest in seg.get("destinations", []):
-            for opt in dest.get("reach_options", []):
-                if not opt.get("path") and opt.get("from_lat") and opt.get("to_lat") and opt.get("mode") in driving_modes:
-                    path_tasks.append(_fetch_osrm(opt, "driving"))
-            for opt in dest.get("transit_options", []):
-                # Only OSRM for metro/train (not bus)
-                if opt.get("mode") not in ("bus_ordinary", "bus_ac_vajra", "kia_bus") and opt.get("mode") in driving_modes:
-                    if not opt.get("path") and opt.get("from_lat") and opt.get("to_lat"):
-                        path_tasks.append(_fetch_osrm(opt, "driving"))
-                for fopt in opt.get("final_options", []):
-                    if not fopt.get("path") and fopt.get("from_lat") and fopt.get("to_lat") and fopt.get("mode") in driving_modes:
-                        path_tasks.append(_fetch_osrm(fopt, "driving"))
+    if osrm_ok:
+        osrm_sem = asyncio.Semaphore(15)
+        async def _fetch_osrm(opt, profile):
+            async with osrm_sem:
+                try:
+                    p = await transit_service.get_osrm_path_between(opt["from_lat"], opt["from_lng"], opt["to_lat"], opt["to_lng"], profile)
+                    if p:
+                        opt["path"] = p
+                except:
+                    pass
+        profile_map = {
+            "walk": "walking", "cab": "driving", "cab_xl": "driving",
+            "cab_women": "driving", "cab_pet": "driving", "auto": "driving",
+            "bike": "driving",
+        }
+        for seg in result.get("segments", []):
+            for opt in seg.get("direct_options", []):
+                mode = opt.get("mode", "")
+                profile = profile_map.get(mode)
+                if profile and not opt.get("path") and opt.get("from_lat") and opt.get("to_lat"):
+                    path_tasks.append(_fetch_osrm(opt, profile))
+            for dest in seg.get("destinations", []):
+                for opt in dest.get("reach_options", []):
+                    mode = opt.get("mode", "")
+                    profile = profile_map.get(mode)
+                    if profile and not opt.get("path") and opt.get("from_lat") and opt.get("to_lat"):
+                        path_tasks.append(_fetch_osrm(opt, profile))
+                for opt in dest.get("transit_options", []):
+                    mode = opt.get("mode", "")
+                    profile = profile_map.get(mode)
+                    if profile and not opt.get("path") and opt.get("from_lat") and opt.get("to_lat"):
+                        path_tasks.append(_fetch_osrm(opt, profile))
+                    for fopt in opt.get("final_options", []):
+                        fmode = fopt.get("mode", "")
+                        fprofile = profile_map.get(fmode)
+                        if fprofile and not fopt.get("path") and fopt.get("from_lat") and fopt.get("to_lat"):
+                            path_tasks.append(_fetch_osrm(fopt, fprofile))
     if path_tasks:
         try:
             await asyncio.wait_for(asyncio.gather(*path_tasks), timeout=20.0)

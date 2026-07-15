@@ -211,6 +211,7 @@ export interface SegmentStopInfo {
   lat: number
   lng: number
   type: string
+  distance_km?: number
 }
 
 export interface SegmentStepData {
