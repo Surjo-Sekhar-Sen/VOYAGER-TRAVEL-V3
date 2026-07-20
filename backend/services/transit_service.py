@@ -115,12 +115,19 @@ def _is_metro_operating() -> bool:
     h = _current_hour()
     return 5 <= h < 23
 
+def _haversine_dist(lat1, lng1, lat2, lng2):
+    R = 6371
+    dlat = (lat2 - lat1) * math.pi / 180
+    dlng = (lng2 - lng1) * math.pi / 180
+    a = math.sin(dlat/2)**2 + math.cos(lat1*math.pi/180) * math.cos(lat2*math.pi/180) * math.sin(dlng/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
 def _route_goes_toward_dest(shape_path: list, stop_lat: float, stop_lng: float, dest_lat: float, dest_lng: float) -> bool:
     """Check if the bus route's shape path goes toward the destination from the given stop.
-    Uses the bearing of the shape near the stop vs. the bearing to destination."""
+    Uses the bearing of the shape near the stop vs. the bearing to destination,
+    AND verifies actual distance progress toward destination."""
     if not shape_path or len(shape_path) < 2:
         return True
-    # Find the closest shape point to the source stop
     min_dist = float('inf')
     closest_idx = 0
     for i, (lat, lng) in enumerate(shape_path):
@@ -130,24 +137,27 @@ def _route_goes_toward_dest(shape_path: list, stop_lat: float, stop_lng: float, 
         if d < min_dist:
             min_dist = d
             closest_idx = i
-    # If the closest point is near the end of the route, route is ending here
     if closest_idx >= len(shape_path) - 2:
         return False
-    # Get direction of shape at this point (vector to next shape point)
     next_idx = min(closest_idx + 3, len(shape_path) - 1)
     shape_dlat = shape_path[next_idx][0] - shape_path[closest_idx][0]
     shape_dlng = shape_path[next_idx][1] - shape_path[closest_idx][1]
-    # Get direction from stop to destination
     dest_dlat = dest_lat - stop_lat
     dest_dlng = dest_lng - stop_lng
-    # Normalize and compute dot product (cosine of angle)
     s_len = math.sqrt(shape_dlat*shape_dlat + shape_dlng*shape_dlng)
     d_len = math.sqrt(dest_dlat*dest_dlat + dest_dlng*dest_dlng)
     if s_len < 0.0001 or d_len < 0.0001:
         return True
     cos_angle = (shape_dlat*dest_dlat + shape_dlng*dest_dlng) / (s_len * d_len)
-    # If angle > 75 degrees (cos_angle < 0.26), route goes away from destination
-    return cos_angle >= 0.26
+    if cos_angle < 0.26:
+        return False
+    # DISTANCE PROGRESS CHECK: verify shape end is not substantially farther from dest
+    end_idx = len(shape_path) - 1
+    start_dist = _haversine_dist(stop_lat, stop_lng, dest_lat, dest_lng)
+    end_dist = _haversine_dist(shape_path[end_idx][0], shape_path[end_idx][1], dest_lat, dest_lng)
+    if end_dist > start_dist * 1.3:
+        return False
+    return True
 
 def _gtfs_buses_at_stop(stop_name) -> list:
     """Get all bus routes serving a stop from GTFS, with upcoming timings."""
@@ -972,7 +982,7 @@ class TransitService:
                     })
             # From this stop: show all available bus routes with timings (individual route cards)
             if all_routes:
-                for route_info in all_routes[:8]:
+                for route_info in all_routes[:10]:
                     rn = route_info["route_number"]
                     next_deps = route_info["next_departures"]
                     transit_dist = stop_to_dest_dist * 0.6
@@ -1410,35 +1420,35 @@ class TransitService:
         # === BUS TRANSIT - Show all available bus routes at this stop ===
         if stop["type"] in ("bus", "metro"):
             gtfs = _ensure_gtfs()
-            all_routes = gtfs.get_all_routes_at_stop(sname) if gtfs else []
+            all_routes = self._cached_gtfs_routes(sname) if gtfs else []
             if all_routes:
-                for route_info in all_routes[:8]:
+                for route_info in all_routes[:10]:
                     rn = route_info["route_number"]
                     next_deps = route_info["next_departures"]
 
-                    # Get GTFS shape path for this route
-                    full_shape = gtfs.get_shape_path_for_route(rn)
-
-                    # Verify route direction: check if shape goes toward destination
+                    full_shape = self._cached_shape_path(rn)
                     if full_shape and not _route_goes_toward_dest(full_shape, s_lat, s_lng, dest_lat, dest_lng):
                         continue
 
-                    # Find actual arrival stops on this route toward destination
-                    route_stops = gtfs.find_stops_on_route_toward_dest(rn, s_lat, s_lng, dest_lat, dest_lng, max_stops=3)
+                    route_stops = self._cached_stops_toward(rn, s_lat, s_lng, dest_lat, dest_lng, max_stops=3)
                     if route_stops:
                         arrival = route_stops[0]
                         t_lat, t_lng = arrival["lat"], arrival["lng"]
                         arrival_name = arrival["stop_name"]
+                        # MUST make at least 1km progress toward destination per hop
+                        current_to_dest = _safe(self.haversine_distance(s_lat, s_lng, dest_lat, dest_lng))
+                        arrival_to_dest = _safe(self.haversine_distance(t_lat, t_lng, dest_lat, dest_lng))
+                        if arrival_to_dest > current_to_dest - 1.0:
+                            continue
                         arrives_at_stop = True
-                        # Use stop-to-stop segment for accurate path
-                        shape_path = gtfs.get_shape_between_stops(sname, arrival_name)
+                        shape_path = self._cached_shape_between(sname, arrival_name)
                     else:
                         # Skip routes where we can't find actual stops toward destination
                         continue
 
                     transit_dist = self.haversine_distance(s_lat, s_lng, t_lat, t_lng)
                     if transit_dist < 0.5:
-                        transit_dist = 1.0
+                        continue
                     bf = max(6, round(db.get_bmtc_ordinary_fare(transit_dist) or 6))
                     total = bf * group_size
                     if budget and total > budget: continue
@@ -1486,7 +1496,7 @@ class TransitService:
                             "arrives_at_stop": arrives_at_stop,
                             "bus_times": bus_times_list[:5],
                             "transit_type": "bus",
-                            "path": shape_path,
+                            "path": shape_path or full_shape or self._interpolate_path(s_lat, s_lng, t_lat, t_lng),
                             "next_transit": next_transit,
                         }
                         all_transit.append(ac_topt)
@@ -1538,6 +1548,14 @@ class TransitService:
                 total = mf * group_size
                 if budget and total > budget: continue
                 line_used = stop.get("line", dm.get("line", "Metro"))
+                # Chain metro→bus transfers from destination metro station
+                metro_next_transit = []
+                dm_dest_dist = _safe(self.haversine_distance(dm["lat"], dm["lng"], dest_lat, dest_lng))
+                if dm_dest_dist > 1.5:
+                    metro_next_transit = self._build_next_transit(
+                        dm["lat"], dm["lng"], sname, dest_lat, dest_lng, dest_name,
+                        group_size, budget, dest_nearby_metro, ride_types, depth=2
+                    )
                 all_transit.append({
                     "mode": "metro", "label": f"Metro to {dm_name}", "icon": "🚇",
                     "route_number": line_used,
@@ -1550,7 +1568,7 @@ class TransitService:
                     "arrives_at_stop": True,
                     "transit_type": "metro",
                     "path": metro_path,
-                    "next_transit": [],
+                    "next_transit": metro_next_transit,
                 })
 
         # === TRAIN TRANSIT ===
@@ -1597,19 +1615,20 @@ class TransitService:
                     "from_lat": t_lat, "from_lng": t_lng,
                     "to_lat": dest_lat, "to_lng": dest_lng,
                     "arrives_at_stop": False,
+                    "path": self._interpolate_path(t_lat, t_lng, dest_lat, dest_lng, num_points=8),
                 })
             # Bus final mile: find buses from drop-off that go toward dest
             if fdist > 0.5 and isinstance(topt.get("transit_type"), str) and topt["transit_type"] in ("bus", "metro") and _gtfs:
-                all_routes_dropoff = _gtfs.get_all_routes_at_stop(tname)
-                for final_route_info in all_routes_dropoff[:3]:
+                all_routes_dropoff = self._cached_gtfs_routes(tname)
+                for final_route_info in all_routes_dropoff[:2]:
                     frn = final_route_info["route_number"]
-                    fr_shape = _gtfs.get_shape_path_for_route(frn)
+                    fr_shape = self._cached_shape_path(frn)
                     if fr_shape and _route_goes_toward_dest(fr_shape, t_lat, t_lng, dest_lat, dest_lng):
-                        fr_stops = _gtfs.find_stops_on_route_toward_dest(frn, t_lat, t_lng, dest_lat, dest_lng, max_stops=2)
+                        fr_stops = self._cached_stops_toward(frn, t_lat, t_lng, dest_lat, dest_lng, max_stops=2)
                         if fr_stops:
                             fr_arrive = fr_stops[0]
                             fr_dist = _safe(self.haversine_distance(t_lat, t_lng, fr_arrive["lat"], fr_arrive["lng"]))
-                            if fr_dist > 0.3 and fr_dist < fdist - 0.3:
+                            if fr_dist > 0.5 and fr_dist < fdist - 0.5:
                                 fr_bf = max(6, round(db.get_bmtc_ordinary_fare(fr_dist) or 6))
                                 fr_total = fr_bf * group_size
                                 if not budget or fr_total <= budget:
@@ -1621,7 +1640,7 @@ class TransitService:
                                         "from_lat": t_lat, "from_lng": t_lng,
                                         "to_lat": _safe(fr_arrive["lat"]), "to_lng": _safe(fr_arrive["lng"]),
                                         "arrives_at_stop": True, "transit_type": "bus",
-                                        "path": _gtfs.get_shape_between_stops(tname, fr_arrive["stop_name"]) or self._interpolate_path(t_lat, t_lng, fr_arrive["lat"], fr_arrive["lng"]),
+                                        "path": self._cached_shape_between(tname, fr_arrive["stop_name"]) or self._interpolate_path(t_lat, t_lng, fr_arrive["lat"], fr_arrive["lng"]),
                                         "final_options": [], "next_transit": []})
             # Ride options if distance >= 1km AND not already having a bus final that fits budget
             has_bus_final = any(o.get("mode","").startswith("bus") for o in topt["final_options"])
@@ -1641,10 +1660,80 @@ class TransitService:
                         "from_lat": t_lat, "from_lng": t_lng,
                         "to_lat": dest_lat, "to_lng": dest_lng,
                         "arrives_at_stop": False,
+                        "path": self._interpolate_path(t_lat, t_lng, dest_lat, dest_lng, num_points=8),
                     })
 
+        # Sort transit options by relevance: closer to dest + faster + cheaper first
+        def _relevance_score(topt):
+            dist_to_dest = _safe(self.haversine_distance(topt.get("to_lat", dest_lat), topt.get("to_lng", dest_lng), dest_lat, dest_lng))
+            score = 0
+            score -= dist_to_dest * 10
+            score -= topt.get("duration_minutes", 60) * 0.5
+            score -= topt.get("fare", 0) * 0.1
+            if topt.get("transit_type") == "metro":
+                score += 15
+            if topt.get("next_transit"):
+                score -= 5
+            if topt.get("final_options"):
+                walk_final = any(o.get("mode") == "walk" for o in topt.get("final_options", []))
+                if walk_final:
+                    score += 10
+            return score
+        all_transit.sort(key=_relevance_score, reverse=True)
         entry["transit_options"] = all_transit
         return all_transit
+
+    def _coord_key(self, lat, lng):
+        return f"{round(lat,3)},{round(lng,3)}"
+
+    def _is_visited(self, lat, lng, visited_set):
+        """Check if a coordinate is within 300m of any visited point."""
+        for v in list(visited_set):
+            try:
+                parts = v.split(",")
+                vlat, vlng = float(parts[0]), float(parts[1])
+                if _haversine_dist(lat, lng, vlat, vlng) < 0.3:
+                    return True
+            except:
+                pass
+        return False
+
+    def _cached_gtfs_routes(self, stop_name):
+        if not hasattr(self, '_gtfs_route_cache'):
+            self._gtfs_route_cache = {}
+        key = str(stop_name)
+        if key not in self._gtfs_route_cache:
+            self._gtfs_route_cache[key] = _gtfs.get_all_routes_at_stop(stop_name) if _gtfs else []
+        return self._gtfs_route_cache[key]
+
+    def _cached_shape_path(self, route_number):
+        if not hasattr(self, '_shape_cache'):
+            self._shape_cache = {}
+        key = str(route_number).strip().upper()
+        if key not in self._shape_cache:
+            self._shape_cache[key] = _gtfs.get_shape_path_for_route(route_number) if _gtfs else None
+        return self._shape_cache[key]
+
+    def _cached_stops_toward(self, route_number, from_lat, from_lng, dest_lat, dest_lng, max_stops=3):
+        if not hasattr(self, '_stops_toward_cache'):
+            self._stops_toward_cache = {}
+        key = f"{route_number}|{round(from_lat,4)}|{round(from_lng,4)}|{round(dest_lat,4)}|{round(dest_lng,4)}|{max_stops}"
+        if key not in self._stops_toward_cache:
+            self._stops_toward_cache[key] = _gtfs.find_stops_on_route_toward_dest(route_number, from_lat, from_lng, dest_lat, dest_lng, max_stops) if _gtfs else []
+        return self._stops_toward_cache[key]
+
+    def _cached_shape_between(self, from_name, to_name):
+        if not hasattr(self, '_shape_between_cache'):
+            self._shape_between_cache = {}
+        key = f"{from_name}|{to_name}"
+        if key not in self._shape_between_cache:
+            self._shape_between_cache[key] = _gtfs.get_shape_between_stops(from_name, to_name) if _gtfs else None
+        return self._shape_between_cache[key]
+
+    def _clear_caches(self):
+        for attr in ['_gtfs_route_cache', '_shape_cache', '_stops_toward_cache', '_shape_between_cache']:
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     def _build_next_transit(self, t_lat, t_lng, exclude_name, dest_lat, dest_lng, dest_name,
                             group_size, budget, dest_nearby_metro, ride_types, depth=2,
@@ -1658,6 +1747,7 @@ class TransitService:
 
         if visited_stops is None:
             visited_stops = set()
+        visited_stops.add(self._coord_key(t_lat, t_lng))
         exclude_lower = exclude_name.lower() if exclude_name else ""
 
         # Identify major transit hubs for intermediate routing
@@ -1682,24 +1772,25 @@ class TransitService:
                             return True
             return False
 
-        # Bus transfers at nearby stops
+        # Bus transfers at nearby stops — also check same stop for different routes
         nearby_arrival_bus = db.find_nearby_bus_stops(t_lat, t_lng, 0.5) or []
         for abs in nearby_arrival_bus[:4]:
             aname = abs.get("name", "")
             aname_lower = aname.lower()
-            if aname_lower == exclude_lower or aname_lower in visited_stops:
+            if aname_lower == exclude_lower:
                 continue
-            visited_stops.add(aname_lower)
-            gtfs_at_arrival = _gtfs.get_all_routes_at_stop(aname) if _gtfs else []
-            for route_info in gtfs_at_arrival[:4]:
+            if self._is_visited(abs["lat"], abs["lng"], visited_stops):
+                continue
+            visited_stops.add(self._coord_key(abs["lat"], abs["lng"]))
+            gtfs_at_arrival = self._cached_gtfs_routes(aname) if _gtfs else []
+            for route_info in gtfs_at_arrival[:3]:
                 rn2 = route_info["route_number"]
-                shape_path2 = _gtfs.get_shape_path_for_route(rn2) if _gtfs else None
+                shape_path2 = self._cached_shape_path(rn2)
 
-                # Relaxed direction check: accept buses going toward dest OR major hubs
                 if shape_path2 and not _is_hub_or_toward_dest(shape_path2, abs["lat"], abs["lng"], dest_lat, dest_lng, rn2):
                     continue
 
-                route_stops2 = _gtfs.find_stops_on_route_toward_dest(rn2, abs["lat"], abs["lng"], dest_lat, dest_lng, max_stops=2) if _gtfs else []
+                route_stops2 = self._cached_stops_toward(rn2, abs["lat"], abs["lng"], dest_lat, dest_lng, max_stops=2)
                 if not route_stops2:
                     continue
                 arrive2 = route_stops2[0]
@@ -1710,9 +1801,9 @@ class TransitService:
                 nt2_name = arrive2["stop_name"]
                 nt2_dist = _safe(self.haversine_distance(nt2_lat, nt2_lng, dest_lat, dest_lng))
 
-                # Must make reasonable progress toward dest (or go to major hub via same route)
+                # Must make at least 1km progress toward dest (or go to major hub)
                 arrival_hub = any(h in nt2_name.lower() for h in MAJOR_HUBS)
-                if not arrival_hub and nt2_dist >= dropoff_dist - 0.2:
+                if not arrival_hub and nt2_dist >= dropoff_dist - 1.0:
                     continue
 
                 bf2 = max(6, round(db.get_bmtc_ordinary_fare(t2_dist) or 6))
@@ -1721,14 +1812,7 @@ class TransitService:
                     continue
                 next_deps2 = route_info.get("next_departures", [])
 
-                # Use stop-to-stop path
-                nt2_path = None
-                if _gtfs:
-                    nt2_path = _gtfs.get_shape_between_stops(aname, nt2_name)
-                if not nt2_path:
-                    nt2_path = shape_path2
-                if not nt2_path:
-                    nt2_path = self._interpolate_path(abs["lat"], abs["lng"], nt2_lat, nt2_lng)
+                nt2_path = self._cached_shape_between(aname, nt2_name) or shape_path2 or self._interpolate_path(abs["lat"], abs["lng"], nt2_lat, nt2_lng)
 
                 # final_options: walk if close, rides if far, AND buses to dest if >2km
                 nt2_final = []
@@ -1737,19 +1821,20 @@ class TransitService:
                         "from": nt2_name, "to": dest_name, "distance_km": round(nt2_dist, 2),
                         "duration_minutes": round(nt2_dist * 12), "fare": 0, "per_person": 0,
                         "from_lat": nt2_lat, "from_lng": nt2_lng, "to_lat": dest_lat, "to_lng": dest_lng,
-                        "arrives_at_stop": False})
+                        "arrives_at_stop": False,
+                        "path": self._interpolate_path(nt2_lat, nt2_lng, dest_lat, dest_lng, num_points=8)})
                 # Also find buses from this stop that go directly to destination area
                 if nt2_dist > 0.5 and _gtfs:
-                    all_routes_here = _gtfs.get_all_routes_at_stop(nt2_name)
-                    for final_route_info in all_routes_here[:3]:
+                    all_routes_here = self._cached_gtfs_routes(nt2_name)
+                    for final_route_info in all_routes_here[:2]:
                         frn = final_route_info["route_number"]
-                        fr_shape = _gtfs.get_shape_path_for_route(frn)
+                        fr_shape = self._cached_shape_path(frn)
                         if fr_shape and _route_goes_toward_dest(fr_shape, nt2_lat, nt2_lng, dest_lat, dest_lng):
-                            fr_stops = _gtfs.find_stops_on_route_toward_dest(frn, nt2_lat, nt2_lng, dest_lat, dest_lng, max_stops=2)
+                            fr_stops = self._cached_stops_toward(frn, nt2_lat, nt2_lng, dest_lat, dest_lng, max_stops=2)
                             if fr_stops:
                                 fr_arrive = fr_stops[0]
                                 fr_dist = _safe(self.haversine_distance(nt2_lat, nt2_lng, fr_arrive["lat"], fr_arrive["lng"]))
-                                if fr_dist > 0.3:
+                                if fr_dist > 0.5:
                                     fr_bf = max(6, round(db.get_bmtc_ordinary_fare(fr_dist) or 6))
                                     fr_total = fr_bf * group_size
                                     if not budget or fr_total <= budget:
@@ -1760,7 +1845,7 @@ class TransitService:
                                             "from_lat": nt2_lat, "from_lng": nt2_lng,
                                             "to_lat": _safe(fr_arrive["lat"]), "to_lng": _safe(fr_arrive["lng"]),
                                             "arrives_at_stop": True, "transit_type": "bus",
-                                            "path": _gtfs.get_shape_between_stops(nt2_name, fr_arrive["stop_name"]) or self._interpolate_path(nt2_lat, nt2_lng, fr_arrive["lat"], fr_arrive["lng"]),
+                                            "path": self._cached_shape_between(nt2_name, fr_arrive["stop_name"]) or self._interpolate_path(nt2_lat, nt2_lng, fr_arrive["lat"], fr_arrive["lng"]),
                                             "final_options": [], "next_transit": []})
                 # Ride options (cab/auto/bike) — only show if user has budget (cheaper preferred) OR no bus found
                 has_bus_final = any(o.get("mode","").startswith("bus") for o in nt2_final)
@@ -1776,7 +1861,8 @@ class TransitService:
                             "from": nt2_name, "to": dest_name, "distance_km": round(nt2_dist, 2),
                             "duration_minutes": round(nt2_dist * tpk), "fare": total, "per_person": pp,
                             "group_capacity": cap, "from_lat": nt2_lat, "from_lng": nt2_lng,
-                            "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False})
+                            "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False,
+                            "path": self._interpolate_path(nt2_lat, nt2_lng, dest_lat, dest_lng, num_points=8)})
 
                 # Recursive depth-2 next_transit (only if still far from dest)
                 nt2_next = []
@@ -1823,12 +1909,16 @@ class TransitService:
                         dm = best_dm
                         dm_dist = _safe(self.haversine_distance(nm["lat"], nm["lng"], dm["lat"], dm["lng"]))
                         if dm_dist > 0.5:
+                            dm_lat, dm_lng = dm["lat"], dm["lng"]
+                            dm_name = dm["name"]
+                            nm_dist_to_dest = _safe(self.haversine_distance(nm["lat"], nm["lng"], dest_lat, dest_lng))
+                            dest_to_dm = _safe(self.haversine_distance(dm_lat, dm_lng, dest_lat, dest_lng))
+                            # Only show metro if it actually goes toward destination
+                            if dest_to_dm > nm_dist_to_dest * 1.1:
+                                continue
                             dm_fare = round(db.get_metro_fare(dm_dist) or 15)
                             dm_total = dm_fare * group_size
                             if not budget or dm_total <= budget:
-                                dm_lat, dm_lng = dm["lat"], dm["lng"]
-                                dm_name = dm["name"]
-                                dest_to_dm = _safe(self.haversine_distance(dm_lat, dm_lng, dest_lat, dest_lng))
 
                                 # final_options from metro exit to destination
                                 dm_final = []
@@ -1837,14 +1927,15 @@ class TransitService:
                                         "from": dm_name, "to": dest_name, "distance_km": round(dest_to_dm, 2),
                                         "duration_minutes": round(dest_to_dm * 12), "fare": 0, "per_person": 0,
                                         "from_lat": dm_lat, "from_lng": dm_lng,
-                                        "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False})
+                                        "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False,
+                                        "path": self._interpolate_path(dm_lat, dm_lng, dest_lat, dest_lng, num_points=8)})
                                 if dest_to_dm > 0.5 and _gtfs:
-                                    metro_drop_routes = _gtfs.get_all_routes_at_stop(dm_name)
-                                    for mfr in metro_drop_routes[:3]:
+                                    metro_drop_routes = self._cached_gtfs_routes(dm_name)
+                                    for mfr in metro_drop_routes[:2]:
                                         mfrn = mfr["route_number"]
-                                        mfr_shape = _gtfs.get_shape_path_for_route(mfrn)
+                                        mfr_shape = self._cached_shape_path(mfrn)
                                         if mfr_shape and _route_goes_toward_dest(mfr_shape, dm_lat, dm_lng, dest_lat, dest_lng):
-                                            mfr_stops = _gtfs.find_stops_on_route_toward_dest(mfrn, dm_lat, dm_lng, dest_lat, dest_lng, max_stops=2)
+                                            mfr_stops = self._cached_stops_toward(mfrn, dm_lat, dm_lng, dest_lat, dest_lng, max_stops=2)
                                             if mfr_stops:
                                                 mfr_arrive = mfr_stops[0]
                                                 mfr_dist = _safe(self.haversine_distance(dm_lat, dm_lng, mfr_arrive["lat"], mfr_arrive["lng"]))
@@ -1859,7 +1950,7 @@ class TransitService:
                                                             "from_lat": dm_lat, "from_lng": dm_lng,
                                                             "to_lat": _safe(mfr_arrive["lat"]), "to_lng": _safe(mfr_arrive["lng"]),
                                                             "arrives_at_stop": True, "transit_type": "bus",
-                                                            "path": _gtfs.get_shape_between_stops(dm_name, mfr_arrive["stop_name"]) or self._interpolate_path(dm_lat, dm_lng, mfr_arrive["lat"], mfr_arrive["lng"]),
+                                                            "path": self._cached_shape_between(dm_name, mfr_arrive["stop_name"]) or self._interpolate_path(dm_lat, dm_lng, mfr_arrive["lat"], mfr_arrive["lng"]),
                                                             "final_options": [], "next_transit": []})
                                 has_bus_final = any(o.get("mode","").startswith("bus") for o in dm_final)
                                 if dest_to_dm >= 1.0 and (not has_bus_final or not budget):
@@ -1869,12 +1960,21 @@ class TransitService:
                                         total = pp * group_size
                                         if budget and total > budget: continue
                                         if budget and has_bus_final and mode not in ("walk",): continue
-                                        dm_final.append({"mode": mode, "label": label, "icon": icon,
-                                            "from": dm_name, "to": dest_name, "distance_km": round(dest_to_dm, 2),
-                                            "duration_minutes": round(dest_to_dm * tpk), "fare": total, "per_person": pp,
-                                            "group_capacity": cap, "from_lat": dm_lat, "from_lng": dm_lng,
-                                            "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False})
+                                dm_final.append({"mode": mode, "label": label, "icon": icon,
+                                    "from": dm_name, "to": dest_name, "distance_km": round(dest_to_dm, 2),
+                                    "duration_minutes": round(dest_to_dm * tpk), "fare": total, "per_person": pp,
+                                    "group_capacity": cap, "from_lat": dm_lat, "from_lng": dm_lng,
+                                    "to_lat": dest_lat, "to_lng": dest_lng, "arrives_at_stop": False,
+                                    "path": self._interpolate_path(dm_lat, dm_lng, dest_lat, dest_lng, num_points=8)})
 
+                                # After metro exits at dm, chain to more buses from dm station
+                                dm_next_transit = []
+                                if depth > 1 and dest_to_dm > 1.5:
+                                    dm_next_transit = self._build_next_transit(
+                                        dm_lat, dm_lng, dm_name, dest_lat, dest_lng, dest_name,
+                                        group_size, budget, dest_nearby_metro, ride_types, depth=depth-1,
+                                        visited_stops=visited_stops.copy()
+                                    )
                                 next_transit.append({
                                     "mode": "metro", "label": f"Metro {nm_name} → {dm_name}", "icon": "🚇",
                                     "route_number": nm_line,
@@ -1884,7 +1984,7 @@ class TransitService:
                                     "from_lat": _safe(nm.get("lat")), "from_lng": _safe(nm.get("lng")),
                                     "to_lat": _safe(dm_lat), "to_lng": _safe(dm_lng),
                                     "arrives_at_stop": True, "transit_type": "metro",
-                                    "path": mpath, "final_options": dm_final, "next_transit": [],
+                                    "path": mpath, "final_options": dm_final, "next_transit": dm_next_transit,
                                 })
             except Exception:
                 pass
@@ -1918,6 +2018,7 @@ class TransitService:
         dest_nearby_metro = db.find_nearby_metro_stations(dest_lat, dest_lng, 2.0) or []
 
         processed = set()
+        all_entries = []
 
         # Bus stops - only show stops with actual GTFS transport data
         for stop in nearby_bus[:8]:
@@ -1943,10 +2044,10 @@ class TransitService:
                                            dest_lat, dest_lng, dest_name,
                                            group_size, budget, dest_nearby_bus, dest_nearby_metro,
                                            dest_rail, is_long_dist)
-                segment["destinations"].append(entry)
+                all_entries.append(entry)
 
         # Metro stations
-        for station in nearby_metro[:4]:
+        for station in nearby_metro[:6]:
             sname = station.get("name", "Metro Station")
             key = f"metro_{sname}"
             if key in processed: continue
@@ -1960,11 +2061,11 @@ class TransitService:
                                            dest_lat, dest_lng, dest_name,
                                            group_size, budget, dest_nearby_bus, dest_nearby_metro,
                                            dest_rail, is_long_dist)
-                segment["destinations"].append(entry)
+                all_entries.append(entry)
 
         # Railway stations
         if nearby_rail and is_long_dist:
-            for station in nearby_rail[:3]:
+            for station in nearby_rail[:5]:
                 sname = station.get("name", "Railway Station")
                 key = f"rail_{sname}"
                 if key in processed: continue
@@ -1977,14 +2078,28 @@ class TransitService:
                                                dest_lat, dest_lng, dest_name,
                                                group_size, budget, dest_nearby_bus, dest_nearby_metro,
                                                dest_rail, is_long_dist)
-                    segment["destinations"].append(entry)
+                    all_entries.append(entry)
 
         # Filter destinations: remove those with no reach options AND no transit options
-        segment["destinations"] = [
-            d for d in segment["destinations"]
+        all_entries = [
+            d for d in all_entries
             if (d.get("reach_options") and len(d["reach_options"]) > 0) or
                (d.get("transit_options") and len(d["transit_options"]) > 0)
         ]
+        # Sort by relevance: closest to source first, then most transit options
+        def _dest_score(de):
+            dlng = de["stop"]["lng"]
+            dlat = de["stop"]["lat"]
+            score = 0
+            score -= _safe(self.haversine_distance(from_lat, from_lng, dlat, dlng)) * 2
+            score -= _safe(self.haversine_distance(dlat, dlng, dest_lat, dest_lng)) * 0.5
+            score += len(de.get("transit_options", [])) * 3
+            if de.get("stop", {}).get("type") == "metro":
+                score += 5
+            return score
+        all_entries.sort(key=_dest_score, reverse=True)
+        max_dest = 6 if segment_index == 0 else 4
+        segment["destinations"] = all_entries[:max_dest]
         return segment
 
     def get_all_segments(self, from_lat: float, from_lng: float, from_name: str,
@@ -1992,6 +2107,7 @@ class TransitService:
                           group_size: int = 1, budget: float = None, max_depth: int = 3) -> dict:
         """Generate chained segments: each transit option's arrival point becomes the next segment's 'from'.
         Segments are returned flat with next_segment_index linking them."""
+        self._clear_caches()
         segments = []
         visited_pts = set()
 
@@ -2019,12 +2135,16 @@ class TransitService:
 
         # Build segments 1, 2, ... from each unique next point
         depth = 1
-        while next_from_map and depth < max_depth:
+        MAX_TOTAL_SEGMENTS = 5
+        while next_from_map and depth < max_depth and len(segments) < MAX_TOTAL_SEGMENTS:
             new_map = {}
+            segs_this_level = 0
             for nk, (nl, ng, nn) in next_from_map.items():
+                if segs_this_level >= 3: break
                 vk = nk
                 if vk in visited_pts: continue
                 visited_pts.add(vk)
+                segs_this_level += 1
                 # Build segment from this arrival point
                 next_seg = self._build_single_segment(nl, ng, nn,
                                                        dest_lat, dest_lng, dest_name,
@@ -2131,14 +2251,24 @@ class TransitService:
         self._path_cache = {}
 
     def _interpolate_path(self, slat, slng, dlat, dlng, num_points=12):
-        """Generate interpolated points along great circle if OSRM fails."""
-        import math
+        """Generate interpolated points along great circle if OSRM fails.
+        Adds slight curvature to avoid dead-straight lines."""
+        import math, random
         points = []
         for i in range(num_points + 1):
             t = i / num_points
             lat = slat + (dlat - slat) * t
             lng = slng + (dlng - slng) * t
             points.append([round(lat, 6), round(lng, 6)])
+        # Slight mid-route bulge to look more road-like
+        if num_points >= 4 and _haversine_dist(slat, slng, dlat, dlng) > 1.0:
+            mid = num_points // 2
+            bulge = _haversine_dist(slat, slng, dlat, dlng) * 0.008
+            angle = math.atan2(dlat - slat, dlng - slng) + math.pi / 3
+            for idx in [mid - 1, mid, mid + 1]:
+                if 0 < idx < len(points):
+                    points[idx][0] += math.sin(angle) * bulge * (0.5 if idx != mid else 1.0)
+                    points[idx][1] += math.cos(angle) * bulge * (0.5 if idx != mid else 1.0)
         return points
 
     async def get_osrm_path_between(self, slat, slng, dlat, dlng, profile="driving"):

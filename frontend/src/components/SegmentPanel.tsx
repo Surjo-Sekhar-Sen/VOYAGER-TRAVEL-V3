@@ -108,7 +108,7 @@ export default function SegmentPanel({
     getAllSegments(
       sourceLocation[0], sourceLocation[1], sourceName,
       destLocation[0], destLocation[1], destName,
-      groupSize, budget, 1
+      groupSize, budget, 3
     ).then(res => {
       if (res.data) setData(res.data)
     }).catch(err => {
