@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { RouteOption, RidePrice, PlaceResult, RouteLeg, NewsItem, MapRouteGeometry } from '../types'
 import { planRoute, getRidePrices, searchPlaces } from '../services/api'
-import { getModeIcon, getModeLabel, formatDuration, formatRupees, getScoreColor, getScoreLabel } from '../utils/helpers'
+import { getModeLabel, formatDuration, formatRupees, getScoreColor, getScoreLabel } from '../utils/helpers'
 
 function _distKm(a: [number, number], b: [number, number]): number {
   const R = 6371; const dLat = (b[0] - a[0]) * Math.PI / 180; const dLng = (b[1] - a[1]) * Math.PI / 180
@@ -319,31 +319,32 @@ export default function AToBPanel({
       {/* Source/Dest Inputs */}
       <div className="atob-inputs">
         <div className="input-with-icon">
-          <span>🟢</span>
+          <span className="material-symbols-outlined" style={{ fontSize: 18, color: 'var(--secondary)' }}>trip_origin</span>
           <input type="text" placeholder="Starting point..." value={sourceQuery}
             onChange={(e) => handleSourceQuery(e.target.value)} />
           <button onClick={handleUseCurrentLocation}
-            style={{ background: 'none', border: 'none', color: '#60a5fa', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap' }}>
-            📍 Current
+            style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 2 }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>my_location</span> Current
           </button>
         </div>
         {sourceLoading && sourceSuggestions.length === 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {[1,2,3].map(i => (
               <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
-                <span style={{ display: 'inline-block', width: 16, height: 12, background: '#334155', borderRadius: 2 }} />
-                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: '#334155', borderRadius: 2, marginLeft: 6 }} />
+                <span style={{ display: 'inline-block', width: 16, height: 12, background: 'var(--outline-variant)', borderRadius: 2 }} />
+                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: 'var(--outline-variant)', borderRadius: 2, marginLeft: 6 }} />
               </div>
             ))}
-            <div style={{ padding: '4px 8px', fontSize: 10, color: '#64748b' }}>Searching...</div>
+            <div style={{ padding: '4px 8px', fontSize: 10, color: 'var(--text-muted)' }}>Searching...</div>
           </div>
         )}
         {!sourceLoading && sourceSuggestions.length > 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {sourceSuggestions.map((place, i) => (
               <div key={i} className="suggestion-item" onClick={() => handleSourceSelect(place)}>
-                <span>{getModeIcon(place.place_type)}</span> {place.name}
-                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
+                <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--text-muted)', marginRight: 4 }}>location_on</span>
+                {place.name}
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
               </div>
             ))}
           </div>
@@ -351,30 +352,33 @@ export default function AToBPanel({
         {/* Waypoints */}
         {waypoints.map((wp, wi) => (
           <div key={wi} style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-            <span style={{ fontSize: 11, color: '#f59e0b' }}>📍{wi + 1}</span>
+            <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#f59e0b' }}>radio_button_checked</span>
             <input type="text" placeholder={`Stop ${wi + 2}...`} value={wp.query}
               onChange={(e) => handleWpQuery(wi, e.target.value)}
-              style={{ flex: 1, padding: '6px 8px', fontSize: 12, border: '1px solid #475569', borderRadius: 6, background: '#1e293b', color: '#e2e8f0', outline: 'none' }} />
+              style={{ flex: 1, padding: '6px 8px', fontSize: 12, border: '1px solid var(--outline-variant)', borderRadius: 'var(--radius-md)', background: 'rgba(255,255,255,0.8)', color: 'var(--text)', outline: 'none' }} />
             <button onClick={() => removeWaypoint(wi)}
-              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14, padding: '2px 6px' }}>✕</button>
+              style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', fontSize: 14, padding: '2px 6px' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+            </button>
           </div>
         ))}
         {wpSuggestions && wpSuggestions.items.length > 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {wpSuggestions.items.map((place, i) => (
               <div key={i} className="suggestion-item" onClick={() => selectWpSuggestion(wpSuggestions.idx, place)}>
-                <span>{getModeIcon(place.place_type)}</span> {place.name}
-                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
+                <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--text-muted)', marginRight: 4 }}>location_on</span>
+                {place.name}
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
               </div>
             ))}
           </div>
         )}
         <button onClick={addWaypoint} disabled={waypoints.length >= 5}
-          style={{ marginTop: 4, background: '#1e3a5f', border: '1px solid #3b82f6', color: '#60a5fa', padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', width: '100%' }}>
-          + Add Stop ({waypoints.length}/5)
+          style={{ marginTop: 4, background: 'var(--primary-container)', border: 'none', color: 'var(--primary)', padding: '6px 10px', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer', width: '100%', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>add</span> Add Stop ({waypoints.length}/5)
         </button>
         <div className="input-with-icon" style={{ marginTop: 4 }}>
-          <span>🔴</span>
+          <span className="material-symbols-outlined" style={{ fontSize: 18, color: 'var(--error)' }}>location_on</span>
           <input type="text" placeholder="Destination..." value={destQuery}
             onChange={(e) => handleDestQuery(e.target.value)} />
         </div>
@@ -382,19 +386,20 @@ export default function AToBPanel({
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {[1,2,3].map(i => (
               <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
-                <span style={{ display: 'inline-block', width: 16, height: 12, background: '#334155', borderRadius: 2 }} />
-                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: '#334155', borderRadius: 2, marginLeft: 6 }} />
+                <span style={{ display: 'inline-block', width: 16, height: 12, background: 'var(--outline-variant)', borderRadius: 2 }} />
+                <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: 'var(--outline-variant)', borderRadius: 2, marginLeft: 6 }} />
               </div>
             ))}
-            <div style={{ padding: '4px 8px', fontSize: 10, color: '#64748b' }}>Searching...</div>
+            <div style={{ padding: '4px 8px', fontSize: 10, color: 'var(--text-muted)' }}>Searching...</div>
           </div>
         )}
         {!destLoading && destSuggestions.length > 0 && (
           <div className="suggestions-dropdown" style={{ position: 'relative' }}>
             {destSuggestions.map((place, i) => (
               <div key={i} className="suggestion-item" onClick={() => handleDestSelect(place)}>
-                <span>{getModeIcon(place.place_type)}</span> {place.name}
-                <span style={{ fontSize: 10, color: '#64748b', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
+                <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--text-muted)', marginRight: 4 }}>location_on</span>
+                {place.name}
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{place.address?.slice(0, 30)}</span>
               </div>
             ))}
           </div>
@@ -403,89 +408,118 @@ export default function AToBPanel({
 
       {/* Preferences */}
       <div className="preferences-panel" style={{ marginTop: 8 }}>
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8, fontWeight: 600 }}>⚙️ PREFERENCES</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>tune</span> PREFERENCES
+        </div>
         <div className="pref-row">
-          <span>👥 Group Size</span>
+          <span><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>group</span> Group Size</span>
           <input type="number" min={1} max={20} value={prefs.groupSize}
             onChange={(e) => setPrefs({ ...prefs, groupSize: parseInt(e.target.value) || 1 })} />
         </div>
         <div className="pref-row">
-          <span>💰 Budget (₹)</span>
+          <span><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>payments</span> Budget (₹)</span>
           <input type="number" min={0} placeholder="No limit" value={prefs.budget || ''}
             onChange={(e) => setPrefs({ ...prefs, budget: e.target.value ? parseFloat(e.target.value) : undefined })} />
         </div>
       </div>
 
-      {/* Travel Mode Selector — renamed to Public / Online */}
+      {/* Travel Mode Selector */}
       <div className="mode-selector" style={{ marginTop: 8 }}>
         <button className={`mode-btn ${travelMode === 'public' ? 'active' : ''}`}
-          onClick={() => setTravelMode('public')}>🚌 Public / Online</button>
+          onClick={() => setTravelMode('public')}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>directions_bus</span> Public / Online
+        </button>
         <button className={`mode-btn ${travelMode === 'personal' ? 'active' : ''}`}
-          onClick={() => setTravelMode('personal')}>🚗 Drive</button>
+          onClick={() => setTravelMode('personal')}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>directions_car</span> Drive
+        </button>
         <button className={`mode-btn ${travelMode === 'walking' ? 'active' : ''}`}
-          onClick={() => setTravelMode('walking')}>🚶 Walk</button>
+          onClick={() => setTravelMode('walking')}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>directions_walk</span> Walk
+        </button>
       </div>
 
       {/* Segment Builder button */}
       {travelMode === 'public' && (
         <button onClick={handleOpenSegmentPanel} style={{
           width: '100%', padding: '10px', marginTop: 8,
-          background: '#1e3a5f', border: '1px solid #3b82f6',
-          color: '#60a5fa', borderRadius: 8, cursor: 'pointer',
-          fontSize: 13, fontWeight: 600,
+          background: 'var(--primary-container)',
+          border: 'none',
+          color: 'var(--primary)', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
+          fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
         }}>
-          🔧 Open Segment Builder
+          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>route</span> Open Segment Builder
         </button>
       )}
 
       <button className="go-btn" onClick={handlePlanRoute}
         disabled={!sourceLocation || !destLocation || loading}
         style={{ opacity: (!sourceLocation || !destLocation || loading) ? 0.5 : 1 }}>
-        {loading ? '⏳ Analysing Routes...' : '🚀 Find Routes'}
+        {loading ? (
+          <><span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>sync</span> Analysing Routes...</>
+        ) : (
+          <><span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>explore</span> Find Routes</>
+        )}
       </button>
 
       {/* AI Recommendation */}
       {recommendations && (
-        <div style={{ marginTop: 12, padding: 12, background: '#1e3a5f', borderRadius: 10, border: '1px solid #3b82f6' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#60a5fa', marginBottom: 6 }}>🤖 AI RECOMMENDATION</div>
-          <div style={{ fontSize: 13, color: '#e2e8f0', marginBottom: 4 }}>
-            Recommended: <strong>{recommendations.recommended_mode}</strong>
-            {' '}| ₹{recommendations.estimated_cost_min}-{recommendations.estimated_cost_max}
-            {' '}| ⏱️ ~{recommendations.estimated_time_minutes}min
-            {' '}| Safety: {'🟢'.repeat(Math.floor((recommendations.safety_rating || 5) / 2))}
+        <div className="insights-box" style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>auto_awesome</span> AI RECOMMENDATION
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>
+            Recommended: <strong>{recommendations.recommended_mode || 'cab'}</strong>
+            {' '}| ₹{recommendations.estimated_cost_min || 100}-{recommendations.estimated_cost_max || 500}
+            {' '}| <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle' }}>schedule</span> ~{recommendations.estimated_time_minutes || 30}min
+            {' '}| Safety: {Array.from({length: Math.floor((recommendations.safety_rating || 5) / 2)}, (_, i) => (
+              <span key={i} className="material-symbols-outlined" style={{ fontSize: 12, color: 'var(--secondary)', verticalAlign: 'middle' }}>verified</span>
+            ))}
           </div>
           {recommendations.tips?.length > 0 && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>💡 Tips: {recommendations.tips.slice(0, 3).join(' · ')}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 12 }}>lightbulb</span>
+              {recommendations.tips.slice(0, 3).join(' · ')}
+            </div>
           )}
           {recommendations.current_issues?.length > 0 && (
-            <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 2 }}>⚠️ {recommendations.current_issues.slice(0, 2).join(' · ')}</div>
+            <div style={{ fontSize: 11, color: '#b45309', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 12 }}>warning</span>
+              {recommendations.current_issues.slice(0, 2).join(' · ')}
+            </div>
           )}
         </div>
       )}
 
       {/* Weather + Insights */}
       {weather && (
-        <div style={{ marginTop: 8, padding: '6px 10px', background: '#0f172a', borderRadius: 8, fontSize: 11, color: '#94a3b8', display: 'flex', gap: 12 }}>
-          <span>🌤️ {weather.condition} | {weather.temperature_celsius}°C</span>
-          {weather.traffic_alert && <span>🚦 {weather.traffic_alert}</span>}
-          {weather.recommendation && <span>💬 {weather.recommendation}</span>}
+        <div style={{ marginTop: 8, padding: '6px 10px', background: 'var(--surface-container-low)', borderRadius: 'var(--radius-lg)', fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>partly_cloudy_day</span> {weather.condition} | {weather.temperature_celsius}°C</span>
+          {weather.traffic_alert && <span><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>traffic</span> {weather.traffic_alert}</span>}
+          {weather.recommendation && <span><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>campaign</span> {weather.recommendation}</span>}
         </div>
       )}
       {insights && (
-        <div className="insights-box" style={{ marginTop: 8 }}>💡 {insights}</div>
+        <div className="insights-box" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>lightbulb</span> {insights}
+        </div>
       )}
 
       {/* Ride / Cab Prices */}
       {ridePrices.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          <h3 style={{ fontSize: 13, marginBottom: 8, color: '#94a3b8' }}>🚗 Ride / Cab Price Estimates</h3>
+          <h3 style={{ fontSize: 13, marginBottom: 8, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>local_taxi</span> Ride / Cab Price Estimates
+          </h3>
           {ridePrices.map((rp, i) => (
-            <div key={i} style={{ padding: '8px 10px', marginBottom: 4, background: '#0f172a', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div key={i} style={{ padding: '8px 10px', marginBottom: 4, background: 'var(--surface-container-low)', borderRadius: 'var(--radius-lg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontWeight: 600, fontSize: 12, color: '#e2e8f0' }}>{rp.provider} · {rp.mode.replace(/_/g, ' ')}</div>
-                <div style={{ fontSize: 10, color: '#94a3b8' }}>⏱️ {rp.eta_minutes} min {rp.note ? `· ${rp.note}` : ''}</div>
+                <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--text)' }}>{rp.provider} · {rp.mode.replace(/_/g, ' ')}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle' }}>schedule</span> {rp.eta_minutes} min {rp.note ? `· ${rp.note}` : ''}
+                </div>
               </div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#fbbf24' }}>₹{rp.price}</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--primary)' }}>₹{rp.price}</div>
             </div>
           ))}
         </div>
@@ -496,16 +530,18 @@ export default function AToBPanel({
       {routes.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <h3 style={{ fontSize: 13, color: '#94a3b8', margin: 0 }}>🗺️ {routes.length} routes found</h3>
+            <h3 style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>signpost</span> {routes.length} routes found
+            </h3>
             {travelMode === 'public' && (
-              <button onClick={handleOpenSegmentPanel} style={{ background: '#1e3a5f', border: '1px solid #3b82f6', color: '#60a5fa', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>
-                🔧 Segment Builder
+              <button onClick={handleOpenSegmentPanel} style={{ background: 'var(--primary-container)', border: 'none', color: 'var(--primary)', borderRadius: 'var(--radius-full)', padding: '4px 10px', fontSize: 11, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>route</span> Segment Builder
               </button>
             )}
           </div>
           {routes.map((route, i) => (
             <RouteCard key={i} route={route} isSelected={selectedRoute === i} onSelect={() => setSelectedRoute(i)} isRecommended={i === 0} rank={i + 1}
-              getLegColor={(m) => legColors[m] || '#64748b'} getModeIcon={getModeIcon} getModeLabel={getModeLabel}
+              getLegColor={(m) => legColors[m] || '#64748b'} getModeLabel={getModeLabel}
               formatDuration={formatDuration} formatRupees={formatRupees} getScoreColor={getScoreColor} getScoreLabel={getScoreLabel} />
           ))}
         </div>
@@ -518,9 +554,9 @@ export default function AToBPanel({
   )
 }
 
-function RouteCard({ route, isSelected, onSelect, isRecommended, rank, getLegColor, getModeIcon, getModeLabel, formatDuration, formatRupees, getScoreColor, getScoreLabel }: {
+function RouteCard({ route, isSelected, onSelect, isRecommended, rank, getLegColor, getModeLabel, formatDuration, formatRupees, getScoreColor, getScoreLabel }: {
   route: RouteOption; isSelected: boolean; onSelect: () => void; isRecommended?: boolean; rank?: number
-  getLegColor: (m: string) => string; getModeIcon: (m: string) => string; getModeLabel: (m: string) => string
+  getLegColor: (m: string) => string; getModeLabel: (m: string) => string
   formatDuration: (m: number) => string; formatRupees: (v: number) => string
   getScoreColor: (s: number) => string; getScoreLabel: (s: number) => string
 }) {
@@ -528,39 +564,52 @@ function RouteCard({ route, isSelected, onSelect, isRecommended, rank, getLegCol
   const [expanded, setExpanded] = useState(isSelected)
   useEffect(() => { if (isSelected) setExpanded(true) }, [isSelected])
 
+  function modeIcon(mode: string) {
+    const icons: Record<string, string> = {
+      walk: 'directions_walk', bus_ordinary: 'directions_bus', bus_ac_vajra: 'airport_shuttle',
+      metro: 'subway', car: 'directions_car', cab: 'local_taxi', bike: 'pedal_bike',
+      auto: 'local_taxi', train: 'train', driving: 'directions_car',
+    }
+    return <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle' }}>{icons[mode] || 'directions_transit'}</span>
+  }
+
   return (
     <div className={`route-card ${isSelected ? 'selected' : ''}`} onClick={onSelect}
-      style={{ borderColor: isRecommended ? '#22c55e' : isSelected ? '#3b82f6' : '#334155', borderWidth: isRecommended ? 2 : 1 }}>
+      style={{ borderColor: isRecommended ? 'var(--secondary)' : isSelected ? 'var(--primary)' : 'var(--outline-variant)', borderWidth: isRecommended ? 2 : 1 }}>
       <div className="route-header">
         <div className="route-type">
-          {getModeIcon(route.type)} {route.type.replace(/_/g, ' ').toUpperCase()}
-          {isRecommended && <span className="recommended-label">⭐ Best</span>}
+          {modeIcon(route.type)} {route.type.replace(/_/g, ' ').toUpperCase()}
+          {isRecommended && <span className="badge-best">Best</span>}
           {isSelected && <span className="recommended-label">Selected</span>}
-          {rank && <span className="recommended-label" style={{ background: '#1e3a5f', color: '#60a5fa' }}>#{rank}</span>}
+          {rank && <span className="recommended-label" style={{ background: 'var(--primary-container)', color: 'var(--primary)' }}>#{rank}</span>}
         </div>
         <span style={{ fontSize: 18, fontWeight: 700, color: getScoreColor(route.overall_score) }}>{formatRupees(route.total_fare)}</span>
       </div>
 
       <div className="route-stats">
-        <span>⏱️ {formatDuration(route.total_duration_minutes)}</span>
-        <span>📏 {route.total_distance_km.toFixed(1)} km</span>
-        <span>🚶 {route.total_walking_km.toFixed(2)} km walk</span>
-        <span style={{ color: getScoreColor(route.overall_score) }}>⭐ {getScoreLabel(route.overall_score)} ({route.overall_score})</span>
+        <span><span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>schedule</span> {formatDuration(route.total_duration_minutes)}</span>
+        <span><span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>straighten</span> {route.total_distance_km.toFixed(1)} km</span>
+        <span><span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>directions_walk</span> {route.total_walking_km.toFixed(2)} km walk</span>
+        <span style={{ color: getScoreColor(route.overall_score) }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>stars</span>
+          {getScoreLabel(route.overall_score)} ({route.overall_score})
+        </span>
       </div>
 
       <div className="score-bar"><div className="score-fill" style={{ width: `${route.overall_score}%`, background: getScoreColor(route.overall_score) }} /></div>
 
       {route.score_explanation && (
-        <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8', lineHeight: 1.4 }}>
-          💡 {route.score_explanation}
+        <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 10, verticalAlign: 'middle', marginRight: 2 }}>info</span>
+          {route.score_explanation}
         </div>
       )}
 
       {route.route_numbers?.length > 0 && (
-        <div style={{ marginTop: 6, marginBottom: 4, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 9, color: '#64748b' }}>🚌 Routes:</span>
+        <div style={{ marginTop: 6, marginBottom: 4, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 12, color: 'var(--text-muted)' }}>directions_bus</span>
           {route.route_numbers.map((rn, i) => (
-            <span key={i} style={{ fontSize: 9, background: '#1e293b', padding: '1px 6px', borderRadius: 4, color: '#60a5fa', fontWeight: 600, border: '1px solid #334155' }}>{rn}</span>
+            <span key={i} style={{ fontSize: 9, background: 'var(--primary-container)', padding: '1px 6px', borderRadius: 4, color: 'var(--primary)', fontWeight: 600 }}>{rn}</span>
           ))}
         </div>
       )}
@@ -572,45 +621,53 @@ function RouteCard({ route, isSelected, onSelect, isRecommended, rank, getLegCol
               const pct = Math.max(5, (leg.duration_minutes / totalMin) * 100)
               return (
                 <div key={j} title={`${getModeLabel(leg.mode)}: ${formatDuration(leg.duration_minutes)}`}
-                  style={{ width: `${pct}%`, background: getLegColor(leg.mode), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontSize: 9, lineHeight: '16px' }}>{getModeIcon(leg.mode)}</span>
+                  style={{ width: `${pct}%`, background: getLegColor(leg.mode), display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+                  {modeIcon(leg.mode)}
                 </div>
               )
             })}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#64748b', marginTop: 2 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-muted)', marginTop: 2 }}>
             <span>{route.legs[0].from.slice(0, 12)}</span>
             <span>{route.legs[route.legs.length - 1].to.slice(0, 12)}</span>
           </div>
         </div>
       )}
 
-      <div onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }} style={{ fontSize: 10, color: '#60a5fa', cursor: 'pointer', marginTop: 4 }}>
-        {expanded ? '▲ Hide details' : '▼ Show details'}
+      <div onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }} style={{ fontSize: 10, color: 'var(--primary)', cursor: 'pointer', marginTop: 4, fontWeight: 500 }}>
+        <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>
+          {expanded ? 'expand_less' : 'expand_more'}
+        </span>
+        {expanded ? 'Hide details' : 'Show details'}
       </div>
 
       {expanded && (
         <div className="route-legs">
           {route.legs?.map((leg, j) => (
-            <div key={j} className="route-leg" style={{ padding: '4px 6px', marginBottom: 2, background: '#0f172a', borderRadius: 6 }}>
+            <div key={j} className="route-leg" style={{ padding: '4px 6px', marginBottom: 2, background: 'var(--surface-container-low)', borderRadius: 'var(--radius-md)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <span style={{ color: getLegColor(leg.mode) }}>{getModeIcon(leg.mode)}</span>
-                <span style={{ fontSize: 11, color: '#e2e8f0' }}>{getModeLabel(leg.mode)}</span>
-                {leg.line && <span style={{ fontSize: 10, padding: '1px 4px', background: '#1e293b', borderRadius: 3, color: '#94a3b8' }}>{leg.line}</span>}
-                <span style={{ fontSize: 10, color: '#64748b' }}>{leg.distance_km > 0 ? `${leg.distance_km.toFixed(1)} km` : ''}</span>
-                <span style={{ fontSize: 10, color: '#64748b' }}>{formatDuration(leg.duration_minutes)}</span>
-                {leg.fare > 0 && <span style={{ fontSize: 11, color: '#fbbf24' }}>{formatRupees(leg.fare)}</span>}
+                <span style={{ color: getLegColor(leg.mode) }}>{modeIcon(leg.mode)}</span>
+                <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 500 }}>{getModeLabel(leg.mode)}</span>
+                {leg.line && <span style={{ fontSize: 10, padding: '1px 4px', background: 'var(--surface-container)', borderRadius: 3, color: 'var(--text-muted)' }}>{leg.line}</span>}
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{leg.distance_km > 0 ? `${leg.distance_km.toFixed(1)} km` : ''}</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatDuration(leg.duration_minutes)}</span>
+                {leg.fare > 0 && <span style={{ fontSize: 11, color: 'var(--primary)', fontWeight: 600 }}>{formatRupees(leg.fare)}</span>}
               </div>
-              <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>{leg.from.slice(0, 25)} → {leg.to.slice(0, 25)}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 10, verticalAlign: 'middle', marginRight: 1 }}>trip_origin</span>
+                {leg.from.slice(0, 25)}
+                <span className="material-symbols-outlined" style={{ fontSize: 10, verticalAlign: 'middle', marginLeft: 2, marginRight: 2 }}>arrow_forward</span>
+                {leg.to.slice(0, 25)}
+              </div>
               {(leg as any).route_numbers?.length > 0 && (
-                <div style={{ display: 'flex', gap: 3, marginTop: 2 }}>
-                  <span style={{ fontSize: 9, color: '#64748b' }}>Bus:</span>
+                <div style={{ display: 'flex', gap: 3, marginTop: 2, alignItems: 'center' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 10, color: 'var(--text-muted)' }}>directions_bus</span>
                   {(leg as any).route_numbers.map((rn: string, ri: number) => (
-                    <span key={ri} style={{ fontSize: 8, background: '#1e3a5f', padding: '1px 5px', borderRadius: 3, color: '#60a5fa', fontWeight: 600 }}>{rn}</span>
+                    <span key={ri} style={{ fontSize: 8, background: 'var(--primary-container)', padding: '1px 5px', borderRadius: 3, color: 'var(--primary)', fontWeight: 600 }}>{rn}</span>
                   ))}
                 </div>
               )}
-              {leg.instructions && <div style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic', marginTop: 1 }}>💡 {leg.instructions}</div>}
+              {leg.instructions && <div style={{ fontSize: 9, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 1 }}>{leg.instructions}</div>}
             </div>
           ))}
         </div>

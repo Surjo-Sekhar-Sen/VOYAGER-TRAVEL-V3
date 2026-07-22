@@ -284,3 +284,9 @@ export interface MapRouteGeometry {
   dashArray?: string
   label?: string
 }
+
+export interface NavTab {
+  key: AppMode
+  label: string
+  icon: string
+}

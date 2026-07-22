@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 from backend.services.geocoding import geocoding_service
 from backend.agents.llm_agent import llm_agent
-from backend.services.n8n_service import n8n_service
+
 
 router = APIRouter(prefix="/api/search", tags=["Search"])
 
@@ -74,7 +74,7 @@ async def get_ride_prices(
     source: str = Query(..., description="Source location name"),
     destination: str = Query(..., description="Destination location name")
 ):
-    prices = await n8n_service.get_ride_prices(source, destination)
+    prices = await llm_agent.get_live_prices(source, destination, mode="all")
     return {"status": "success", "source": source, "destination": destination, "prices": prices or []}
 
 @router.get("/current-events")

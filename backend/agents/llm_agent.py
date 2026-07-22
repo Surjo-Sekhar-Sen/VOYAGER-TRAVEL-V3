@@ -2,7 +2,7 @@ import json
 import httpx
 import re
 from backend.core.config import settings
-from backend.services.n8n_service import n8n_service
+from backend.agents.langchain.orchestrator import agent_orchestrator
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_HEADERS = {
@@ -18,18 +18,14 @@ class LLMAgent:
     async def _call_llm(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
         if settings.LLM_PROVIDER == "openrouter" and settings.OPENROUTER_API_KEY:
             return await self._call_openrouter(system_prompt, user_prompt, json_mode)
-
         if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY != "your_gemini_api_key_here":
             return await self._call_gemini_fallback(system_prompt, user_prompt)
-
         raise Exception("No LLM provider configured. Set OPENROUTER_API_KEY or GEMINI_API_KEY in .env")
 
     async def _call_openrouter(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
         models = [settings.OPENROUTER_MODEL] + settings.OPENROUTER_FALLBACK_MODELS
-
         if self._working_model and self._working_model in models:
             models.insert(0, models.pop(models.index(self._working_model)))
-
         for model in models:
             try:
                 body = {
@@ -43,7 +39,6 @@ class LLMAgent:
                 }
                 if json_mode:
                     body["response_format"] = {"type": "json_object"}
-
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(OPENROUTER_URL, json=body, headers=OPENROUTER_HEADERS)
                     if resp.status_code == 200:
@@ -58,7 +53,6 @@ class LLMAgent:
             except Exception as e:
                 print(f"[LLM] Model {model} failed: {str(e)[:60]}")
                 continue
-
         raise Exception("All OpenRouter models failed")
 
     async def _call_gemini_fallback(self, system_prompt: str, user_prompt: str) -> str:
@@ -96,7 +90,6 @@ class LLMAgent:
         system = "You are a place search assistant. Return ONLY valid JSON."
         prompt = f"""List 8-10 REAL places matching "{query}" {loc}.
 Return a JSON array of objects with: name, place_type (mall/hospital/clinic/restaurant/cafe/hotel/lodge/temple/mosque/church/school/park/atm/bank/petrol_pump/charging_station/metro_station/bus_stop/airport/railway_station/police_station/it_hub/pharmacy/supermarket/gym/library/cinema/post_office), lat (float), lng (float), rating (1-5)."""
-
         try:
             text = await self._call_llm(system, prompt, json_mode=True)
             results = json.loads(text) if isinstance(text, str) else text
@@ -114,9 +107,9 @@ Return a JSON array of objects with: name, place_type (mall/hospital/clinic/rest
             return []
 
     async def verify_place(self, name: str, address: str = None) -> dict:
-        n8n_result = await n8n_service.verify_place(name, address)
-        if n8n_result:
-            return n8n_result
+        langchain_result = await agent_orchestrator.verify_place(name, address)
+        if langchain_result:
+            return langchain_result
 
         system = "You are a place verifier. Return ONLY valid JSON."
         prompt = f"""Verify this Bengaluru place: "{name}". Address: {address or 'Bengaluru'}
@@ -158,6 +151,10 @@ Return JSON array: [{{"name":"...","lat":...,"lng":...,"place_type":"...","ratin
             return []
 
     async def get_travel_recs(self, source: str, dest: str, group_size: int, budget: float = None) -> dict:
+        langchain_result = await agent_orchestrator.get_route_recommendation(source, dest, group_size, budget)
+        if langchain_result and langchain_result.get("recommended_mode"):
+            return langchain_result
+
         budget_str = f"budget ₹{budget}" if budget else "no specific budget"
         system = "You are a travel advisor for Bengaluru. Return JSON."
         prompt = f"""Travel from {source} to {dest}, {group_size} people, {budget_str}.
@@ -170,6 +167,10 @@ Return JSON: {{"recommended_mode":"...","estimated_cost_min":int,"estimated_cost
             return {"recommended_mode":"cab","estimated_cost_min":100,"estimated_cost_max":500,"estimated_time_minutes":30,"safety_rating":8,"tips":[],"current_issues":[]}
 
     async def get_live_prices(self, source: str, dest: str, mode: str = "cab") -> list[dict]:
+        langchain_prices = await agent_orchestrator.get_live_prices(source, dest, mode)
+        if langchain_prices:
+            return langchain_prices
+
         system = "Estimate ride prices in Bengaluru. Return JSON array."
         prompt = f"""Estimate prices for {mode} from {source} to {dest} in Bengaluru.
 Return JSON array: [{{"provider":"Uber/Ola/Rapido","mode":"{mode}","price":int,"eta_minutes":int,"note":"..."}}] for 3-4 options."""
@@ -184,9 +185,9 @@ Return JSON array: [{{"provider":"Uber/Ola/Rapido","mode":"{mode}","price":int,"
             return []
 
     async def get_weather_impact(self, location: str = "Bengaluru") -> dict:
-        n8n_result = await n8n_service.get_weather_impact(location)
-        if n8n_result:
-            return n8n_result
+        langchain_weather = await agent_orchestrator.get_weather_impact(location)
+        if langchain_weather and langchain_weather.get("condition"):
+            return langchain_weather
 
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -206,6 +207,10 @@ Return JSON array: [{{"provider":"Uber/Ola/Rapido","mode":"{mode}","price":int,"
             return "No current event data."
 
     async def get_travel_news(self, source: str = None, dest: str = None) -> list[dict]:
+        langchain_news = await agent_orchestrator.get_travel_news(source, dest)
+        if langchain_news and len(langchain_news) > 2:
+            return langchain_news
+
         query_parts = []
         if source: query_parts.append(source)
         if dest: query_parts.append(dest)
@@ -263,6 +268,10 @@ Rules:
         ]
 
     async def get_real_reviews(self, name: str, address: str = None) -> dict | None:
+        langchain_reviews = await agent_orchestrator.analyze_place_reviews(name, address)
+        if langchain_reviews and langchain_reviews.get("reviews"):
+            return langchain_reviews
+
         addr = address or f"{name}, Bengaluru"
         search_query = f"{name} Bengaluru reviews rating"
         try:
@@ -308,6 +317,15 @@ CRITICAL rules:
             return await self._call_llm(system, f"{ctx}\nUser: {user_message}\nAssistant:")
         except:
             return "I'm having trouble processing that request."
+
+    async def get_hotel_prices(self, name: str, city: str = "Bengaluru") -> dict:
+        langchain_result = await agent_orchestrator.get_hotel_prices(name, city)
+        if langchain_result and langchain_result.get("avg_price", 0) > 0:
+            return langchain_result
+        return {"name": name, "min_price": 0, "max_price": 0, "avg_price": 0, "currency": "INR", "source": "unavailable"}
+
+    async def get_comprehensive_context(self, source: str, dest: str, group_size: int, budget: float = None) -> dict:
+        return await agent_orchestrator.get_comprehensive_travel_context(source, dest, group_size, budget)
 
 llm_agent = LLMAgent()
 

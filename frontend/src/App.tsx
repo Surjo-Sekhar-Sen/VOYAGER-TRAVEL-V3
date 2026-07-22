@@ -60,6 +60,12 @@ function App() {
     }
   }, [])
 
+  const tabs: { key: AppMode; label: string; icon: string }[] = [
+    { key: 'search', label: 'Search', icon: 'search' },
+    { key: 'atob', label: 'A to B', icon: 'directions_transit' },
+    { key: 'trip', label: 'Trip', icon: 'map' },
+  ]
+
   return (
     <MainPage
       mode={mode}
@@ -77,6 +83,7 @@ function App() {
       mapRef={mapRef}
       allMarkers={allMarkers}
       onMarkersUpdate={handleMarkersUpdate}
+      tabs={tabs}
     />
   )
 }

@@ -23,8 +23,6 @@ class Settings(BaseSettings):
 
     GEMINI_API_KEY: str = ""
 
-    N8N_WEBHOOK_URL: str = ""
-
     BANGALORE_CENTER_LAT: float = 12.9716
     BANGALORE_CENTER_LNG: float = 77.5946
     BANGALORE_DEFAULT_ZOOM: int = 12

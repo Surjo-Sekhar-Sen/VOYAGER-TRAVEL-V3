@@ -7,7 +7,7 @@ from geopy.distance import geodesic
 from backend.core.database import db
 from backend.agents.llm_agent import llm_agent
 from backend.services.images import image_service
-from backend.services.n8n_service import n8n_service
+
 
 OSM_HEADERS = {"User-Agent": "VOYAGER-App/1.0 (India Transit Navigator)"}
 INDIA_BBOX = "68.7,35.5,97.4,6.7"
@@ -352,65 +352,51 @@ Return a JSON array of objects with EXACT keys: name, place_type (one of: mall/h
                             if r.get("place_type") not in ("bus_stop", "metro_station"):
                                 r["image_url"] = await image_service.get_place_image(r["name"], r.get("place_type"))
                             if r.get("place_type") in ("hotel", "lodge") and not r.get("price_info"):
-                                hp = await n8n_service.get_hotel_prices(r["name"], r.get("address"))
-                                if hp:
+                                hp = await llm_agent.get_hotel_prices(r["name"])
+                                if hp and hp.get("avg_price", 0) > 0:
                                     r["price_info"] = f"₹{hp.get('avg_price', 0)}/night (₹{hp.get('min_price',0)}-₹{hp.get('max_price',0)})"
                                     r["hotel_prices"] = hp
                         except Exception:
                             pass
 
-                    # Try n8n web search for real reviews first
-                    try:
-                        real_reviews = await n8n_service.get_place_reviews(r["name"], r.get("address"))
-                        if real_reviews:
-                            if real_reviews.get("rating"): r["rating"] = float(real_reviews["rating"])
-                            if real_reviews.get("reliability_score"): r["reliability_score"] = float(real_reviews["reliability_score"])
-                            if real_reviews.get("review_summary"): r["review_summary"] = real_reviews["review_summary"]
-                            if real_reviews.get("is_recommended") is not None: r["is_recommended"] = bool(real_reviews["is_recommended"])
-                            if real_reviews.get("reviews"): r["reviews"] = real_reviews.get("reviews", [])[:4]
-                            r["review_source"] = "web"
-                            return
-                    except Exception:
-                        pass
+                        # Real reviews via LangChain
+                        try:
+                            web_reviews = await llm_agent.get_real_reviews(r["name"], r.get("address"))
+                            if web_reviews:
+                                if web_reviews.get("rating"): r["rating"] = float(web_reviews["rating"])
+                                if web_reviews.get("reliability_score"): r["reliability_score"] = float(web_reviews["reliability_score"])
+                                if web_reviews.get("review_summary"): r["review_summary"] = web_reviews["review_summary"]
+                                if web_reviews.get("is_recommended") is not None: r["is_recommended"] = bool(web_reviews["is_recommended"])
+                                if web_reviews.get("reviews"): r["reviews"] = web_reviews.get("reviews", [])[:4]
+                                r["review_source"] = "web"
+                                return
+                        except Exception:
+                            pass
 
-                    # Fallback: LLM web search for real reviews directly
-                    try:
-                        web_reviews = await llm_agent.get_real_reviews(r["name"], r.get("address"))
-                        if web_reviews:
-                            if web_reviews.get("rating"): r["rating"] = float(web_reviews["rating"])
-                            if web_reviews.get("reliability_score"): r["reliability_score"] = float(web_reviews["reliability_score"])
-                            if web_reviews.get("review_summary"): r["review_summary"] = web_reviews["review_summary"]
-                            if web_reviews.get("is_recommended") is not None: r["is_recommended"] = bool(web_reviews["is_recommended"])
-                            if web_reviews.get("reviews"): r["reviews"] = web_reviews.get("reviews", [])[:4]
-                            r["review_source"] = "web"
-                            return
-                    except Exception:
-                        pass
-
-                    # Final fallback: LLM generated (keeps rating/reliability consistent with initial)
-                    try:
-                        prompt = f"""For {r['name']} in Bengaluru, provide realistic data.
+                        # Final fallback: LLM generated
+                        try:
+                            prompt = f"""For {r['name']} in Bengaluru, provide realistic data.
 Return a JSON object with: rating (1.0-5.0), reliability_score (0.0-1.0),
 review_summary (brief 10-20 word summary), is_recommended (bool),
 reviews (array of 2-4 objects with: user (DIFFERENT names from: Priya Sharma, Arun Kumar, Sneha Patel, Ravi Desai, Lakshmi Nair, Vikram Singh, Anjali Gupta, Rajesh Iyer, Deepa Menon, Suresh Reddy, Meera Joshi), rating (1-5 int, vary them), text (unique specific detailed review about experience), date ("2 weeks ago", "last month", "3 days ago", "yesterday", "a month ago")).
 CRITICAL: Each review must have a DIFFERENT name, rating, and text."""
-                        text = await llm_agent._call_llm(
-                            "You are a review analyst for Bengaluru places. Return ONLY valid JSON.",
-                            prompt, json_mode=True
-                        )
-                        content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
-                        if content.startswith("```"): content = content.strip("`").strip()
-                        if content.startswith("json"): content = content[4:].strip()
-                        data = json.loads(content) if isinstance(content, str) else content
-                        if isinstance(data, dict):
-                            if data.get("rating"): r["rating"] = float(data["rating"])
-                            if data.get("reliability_score"): r["reliability_score"] = float(data["reliability_score"])
-                            if data.get("review_summary"): r["review_summary"] = data["review_summary"]
-                            if data.get("is_recommended") is not None: r["is_recommended"] = bool(data["is_recommended"])
-                            if data.get("reviews"): r["reviews"] = data.get("reviews", [])[:4]
-                            r["review_source"] = "llm"
-                    except Exception:
-                        pass
+                            text = await llm_agent._call_llm(
+                                "You are a review analyst for Bengaluru places. Return ONLY valid JSON.",
+                                prompt, json_mode=True
+                            )
+                            content = text.strip() if isinstance(text, str) else str(text) if text else "{}"
+                            if content.startswith("```"): content = content.strip("`").strip()
+                            if content.startswith("json"): content = content[4:].strip()
+                            data = json.loads(content) if isinstance(content, str) else content
+                            if isinstance(data, dict):
+                                if data.get("rating"): r["rating"] = float(data["rating"])
+                                if data.get("reliability_score"): r["reliability_score"] = float(data["reliability_score"])
+                                if data.get("review_summary"): r["review_summary"] = data["review_summary"]
+                                if data.get("is_recommended") is not None: r["is_recommended"] = bool(data["is_recommended"])
+                                if data.get("reviews"): r["reviews"] = data.get("reviews", [])[:4]
+                                r["review_source"] = "llm"
+                        except Exception:
+                            pass
 
                 tasks = [enrich_place(r) for r in results[:8]]
                 await asyncio.gather(*tasks)
@@ -430,15 +416,15 @@ CRITICAL: Each review must have a DIFFERENT name, rating, and text."""
         result = self._make_result(name, lat, lng, place_type, address, 0.8, 4.0)
         result["address"] = address or f"{name}, Bengaluru"
 
-        # Try real reviews from n8n web search first
+        # Real reviews via LangChain
         try:
-            real_reviews = await n8n_service.get_place_reviews(name, address)
-            if real_reviews:
-                if real_reviews.get("rating"): result["rating"] = float(real_reviews["rating"])
-                if real_reviews.get("reliability_score"): result["reliability_score"] = float(real_reviews["reliability_score"])
-                if real_reviews.get("review_summary"): result["review_summary"] = real_reviews["review_summary"]
-                if real_reviews.get("is_recommended") is not None: result["is_recommended"] = bool(real_reviews["is_recommended"])
-                if real_reviews.get("reviews"): result["reviews"] = real_reviews.get("reviews", [])[:4]
+            web_reviews = await llm_agent.get_real_reviews(name, address)
+            if web_reviews:
+                if web_reviews.get("rating"): result["rating"] = float(web_reviews["rating"])
+                if web_reviews.get("reliability_score"): result["reliability_score"] = float(web_reviews["reliability_score"])
+                if web_reviews.get("review_summary"): result["review_summary"] = web_reviews["review_summary"]
+                if web_reviews.get("is_recommended") is not None: result["is_recommended"] = bool(web_reviews["is_recommended"])
+                if web_reviews.get("reviews"): result["reviews"] = web_reviews.get("reviews", [])[:4]
                 result["review_source"] = "web"
         except Exception:
             pass
@@ -475,8 +461,8 @@ CRITICAL: Each review must have a DIFFERENT name, rating, and text."""
             if place_type not in ("bus_stop", "metro_station"):
                 result["image_url"] = await image_service.get_place_image(name, place_type)
             if place_type in ("hotel", "lodge") and not result.get("price_info"):
-                hp = await n8n_service.get_hotel_prices(name, address)
-                if hp:
+                hp = await llm_agent.get_hotel_prices(name)
+                if hp and hp.get("avg_price", 0) > 0:
                     result["price_info"] = f"₹{hp.get('avg_price', 0)}/night (₹{hp.get('min_price',0)}-₹{hp.get('max_price',0)})"
                     result["hotel_prices"] = hp
         except Exception:

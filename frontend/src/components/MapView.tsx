@@ -21,11 +21,14 @@ interface MapViewProps {
   trackingActive?: boolean
 }
 
-function createColoredPin(color: string, emoji: string, size: number = 28, glow: boolean = false) {
+function createColoredPin(color: string, icon: string, size: number = 28, glow: boolean = false, isMaterial: boolean = true) {
   const glowStyle = glow ? `filter: drop-shadow(0 0 8px ${color}) brightness(1.3);` : ''
+  const content = isMaterial
+    ? `<span class="material-symbols-outlined" style="font-size:${size}px;color:${color};${glowStyle}">${icon}</span>`
+    : `<div style="font-size:${size}px;${glowStyle}">${icon}</div>`
   return L.divIcon({
     className: '',
-    html: `<div style="font-size:${size}px;${glowStyle}">${emoji}</div>`,
+    html: content,
     iconSize: [size, size],
     iconAnchor: [size / 2, size],
     popupAnchor: [0, -size],
@@ -92,12 +95,15 @@ function TrafficLayer() {
       <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <button onClick={() => setEnabled(!enabled)}
           style={{
-            padding: '6px 12px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
-            background: enabled ? '#1e3a5f' : '#1e293b', color: enabled ? '#60a5fa' : '#94a3b8',
-            border: enabled ? '1px solid #3b82f6' : '1px solid #475569',
-            transition: 'all 0.2s',
+            padding: '6px 12px', fontSize: 12, cursor: 'pointer', borderRadius: 'var(--radius-md)',
+            background: enabled ? 'var(--primary-container)' : 'rgba(255,255,255,0.8)',
+            color: enabled ? 'var(--primary)' : 'var(--text-muted)',
+            border: 'none',
+            transition: 'all 0.2s', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4,
+            backdropFilter: 'blur(8px)',
+            boxShadow: '0 2px 8px var(--shadow-primary)',
           }}>
-          🚦 Traffic {enabled ? 'ON' : 'OFF'} {loading ? '...' : congestion ? `(${congestion})` : ''}
+          <span className="material-symbols-outlined" style={{fontSize: 14, verticalAlign: 'middle'}}>traffic</span> Traffic {enabled ? 'ON' : 'OFF'} {loading ? '...' : congestion ? `(${congestion})` : ''}
         </button>
       </div>
       {enabled && roads.map((road, i) => (
@@ -115,18 +121,20 @@ function TrafficLayer() {
   )
 }
 
-function getPlaceEmoji(placeType: string): string {
-  const emojis: Record<string, string> = {
-    mall: '🛍️', hospital: '🏥', airport: '✈️', railway_station: '🚉',
-    bus_stand: '🚏', park: '🌳', it_hub: '🏢', metro_station: '🚇',
-    bus_stop: '🚏', atm: '🏧', bank: '🏦', restaurant: '🍽️',
-    hotel: '🏨', lodge: '🏨', temple: '🛕', mosque: '🕌', church: '⛪',
-    school: '📚', petrol_pump: '⛽', charging_station: '🔋',
-    police_station: '🚔', cafe: '☕', clinic: '🏥', pharmacy: '💊',
-    supermarket: '🛒', gym: '🏋️', library: '📖', cinema: '🎬',
-    post_office: '📮', place: '📍',
+function getPlaceMaterialIcon(placeType: string): string {
+  const icons: Record<string, string> = {
+    mall: 'local_mall', hospital: 'local_hospital', airport: 'flight',
+    railway_station: 'train', bus_stand: 'directions_bus', park: 'park',
+    it_hub: 'business_center', metro_station: 'subway', bus_stop: 'directions_bus',
+    atm: 'account_balance', bank: 'account_balance', restaurant: 'restaurant',
+    hotel: 'hotel', lodge: 'lodging', temple: 'temple_hindu', mosque: 'mosque',
+    church: 'church', school: 'school', petrol_pump: 'local_gas_station',
+    charging_station: 'ev_station', police_station: 'local_police', cafe: 'local_cafe',
+    clinic: 'local_hospital', pharmacy: 'local_pharmacy', supermarket: 'local_grocery_store',
+    gym: 'fitness_center', library: 'local_library', cinema: 'theater_comedy',
+    post_office: 'mark_as_unread', place: 'location_on',
   }
-  return emojis[placeType] || '📍'
+  return icons[placeType] || 'location_on'
 }
 
 export default function MapView({
@@ -135,9 +143,9 @@ export default function MapView({
   routeGeometry, onMapClick, newsItems, waypoints,
   liveTrackingPos, trackingActive,
 }: MapViewProps) {
-  const userIcon = useMemo(() => createColoredPin('#3b82f6', '📍', 32, true), [])
-  const sourceIcon = useMemo(() => createColoredPin('#3b82f6', '🟢', 24), [])
-  const destIcon = useMemo(() => createColoredPin('#ef4444', '🔴', 24), [])
+  const userIcon = useMemo(() => createColoredPin('var(--primary)', 'my_location', 32, true), [])
+  const sourceIcon = useMemo(() => createColoredPin('var(--secondary)', 'trip_origin', 28), [])
+  const destIcon = useMemo(() => createColoredPin('var(--error)', 'location_on', 28), [])
 
   const polylineColors: Record<string, string> = {
     metro: '#22c55e', metro_interchange: '#059669',
@@ -218,24 +226,24 @@ export default function MapView({
       {/* News affected-area markers */}
       {newsItems?.map((item, i) => {
         if (!item.lat || !item.lng) return null
-        const bgColor = item.impact === 'negative' ? '#ef4444' : item.impact === 'positive' ? '#22c55e' : '#3b82f6'
-        const emoji = item.impact === 'negative' ? '⚠️' : item.impact === 'positive' ? '✅' : 'ℹ️'
+        const bgColor = item.impact === 'negative' ? 'var(--error)' : item.impact === 'positive' ? 'var(--secondary)' : 'var(--primary)'
+        const iconName = item.impact === 'negative' ? 'warning' : item.impact === 'positive' ? 'check_circle' : 'info'
         return (
           <Marker
             key={`news-${i}`}
             position={[item.lat, item.lng]}
             icon={L.divIcon({
               className: '',
-              html: `<div style="font-size:18px;filter:drop-shadow(0 0 6px ${bgColor});text-align:center">${emoji}</div>`,
+              html: `<span class="material-symbols-outlined" style="font-size:18px;color:${bgColor};filter:drop-shadow(0 0 6px ${bgColor})">${iconName}</span>`,
               iconSize: [24, 24],
               iconAnchor: [12, 12],
             })}
           >
             <Popup>
-              <div style={{ minWidth: 160 }}>
+              <div style={{ fontFamily: 'var(--font)', minWidth: 160 }}>
                 <strong>{item.title}</strong><br />
-                <span style={{ fontSize: 11, color: '#666' }}>{item.description}</span>
-                <div style={{ fontSize: 10, color: '#999', marginTop: 4 }}>{item.timestamp}</div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{item.description}</span>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{item.timestamp}</div>
               </div>
             </Popup>
           </Marker>
@@ -245,25 +253,26 @@ export default function MapView({
       {userLocation && !trackingActive && (
         <Marker position={userLocation} icon={userIcon}>
           <Popup>
-            <strong>📍 Your Location</strong>
-            <br />
-            <span style={{ fontSize: 12, color: '#666' }}>
-              {userLocation[0].toFixed(4)}, {userLocation[1].toFixed(4)}
-            </span>
+            <div style={{ fontFamily: 'var(--font)' }}>
+              <strong>Your Location</strong><br />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {userLocation[0].toFixed(4)}, {userLocation[1].toFixed(4)}
+              </span>
+            </div>
           </Popup>
         </Marker>
       )}
 
       {liveTrackingPos && (
-        <Marker position={liveTrackingPos} icon={createColoredPin('#22c55e', '🟢', 36, true)}>
+        <Marker position={liveTrackingPos} icon={createColoredPin('var(--secondary)', 'radio_button_checked', 36, true)}>
           <Popup>
-            <strong>📍 Live Position</strong>
-            <br />
-            <span style={{ fontSize: 12, color: '#666' }}>
-              {liveTrackingPos[0].toFixed(4)}, {liveTrackingPos[1].toFixed(4)}
-            </span>
-            <br />
-            <span style={{ fontSize: 11, color: '#22c55e' }}>🚶 Tracking active</span>
+            <div style={{ fontFamily: 'var(--font)' }}>
+              <strong>Live Position</strong><br />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {liveTrackingPos[0].toFixed(4)}, {liveTrackingPos[1].toFixed(4)}
+              </span><br />
+              <span style={{ fontSize: 11, color: 'var(--secondary)' }}>Tracking active</span>
+            </div>
           </Popup>
         </Marker>
       )}
@@ -283,14 +292,17 @@ export default function MapView({
       {allMarkers.map((place, i) => {
         const score = place.reliability_score || 0.5
         const isGood = score > 0.7
-        const emoji = getPlaceEmoji(place.place_type)
+        const iconName = getPlaceMaterialIcon(place.place_type)
         const isSelected = selectedPlace &&
           Math.abs(place.lat - selectedPlace.lat) < 0.001 &&
           Math.abs(place.lng - selectedPlace.lng) < 0.001
 
         const icon = L.divIcon({
           className: '',
-          html: `<div style="font-size:${isSelected ? 34 : 24}px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3))">${isGood ? '🟢' : '🔴'}${emoji}</div>`,
+          html: `<div style="display:flex;align-items:center;gap:2px;font-size:${isSelected ? 34 : 24}px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3))">
+            <span class="material-symbols-outlined" style="font-size:${isSelected ? 14 : 10}px;color:${isGood ? 'var(--secondary)' : 'var(--error)'}">${isGood ? 'check_circle' : 'cancel'}</span>
+            <span class="material-symbols-outlined" style="font-size:${isSelected ? 22 : 16}px">${iconName}</span>
+          </div>`,
           iconSize: [isSelected ? 34 : 24, isSelected ? 34 : 24],
           iconAnchor: [isSelected ? 17 : 12, isSelected ? 34 : 24],
           popupAnchor: [0, isSelected ? -34 : -24],
@@ -306,29 +318,31 @@ export default function MapView({
             }}
           >
             <Popup>
-              <div style={{ minWidth: 180 }}>
+              <div style={{ fontFamily: 'var(--font)', minWidth: 180 }}>
                 <strong>{place.name}</strong><br />
-                <span style={{ fontSize: 12, color: '#666' }}>{place.address}</span>
-                <div style={{ marginTop: 6, fontSize: 12 }}>
-                  ⭐ {place.rating?.toFixed(1) || 'N/A'} | ✅ {((place.reliability_score || 0.5) * 100).toFixed(0)}%
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{place.address}</span>
+                <div style={{ marginTop: 6, fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span><span className="material-symbols-outlined" style={{fontSize:12, verticalAlign:'middle'}}>star</span> {place.rating?.toFixed(1) || 'N/A'}</span>
+                  <span><span className="material-symbols-outlined" style={{fontSize:12, verticalAlign:'middle'}}>verified</span> {((place.reliability_score || 0.5) * 100).toFixed(0)}%</span>
                 </div>
                 {place.review_summary && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: '#666', fontStyle: 'italic' }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
                     {place.review_summary}
                   </div>
                 )}
                 {place.price_info && (
-                  <div style={{ marginTop: 4, fontSize: 12, color: '#f59e0b' }}>
-                    💰 {place.price_info}
+                  <div style={{ marginTop: 4, fontSize: 12, color: '#b45309', fontWeight: 500 }}>
+                    <span className="material-symbols-outlined" style={{fontSize:12, verticalAlign:'middle'}}>payments</span> {place.price_info}
                   </div>
                 )}
                 <button
                   onClick={() => onMarkerClick?.(place)}
                   style={{
-                    marginTop: 8, padding: '4px 12px',
-                    background: '#2563eb', color: 'white',
-                    border: 'none', borderRadius: 4, cursor: 'pointer',
-                    fontSize: 12
+                    marginTop: 8, padding: '6px 14px',
+                    background: 'var(--primary)', color: 'var(--on-primary)',
+                    border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer',
+                    fontSize: 12, fontWeight: 500,
+                    boxShadow: '0 2px 8px var(--shadow-primary)',
                   }}
                 >
                   View Details
@@ -344,14 +358,16 @@ export default function MapView({
           position={[selectedPlace.lat, selectedPlace.lng]}
           icon={L.divIcon({
             className: '',
-            html: `<div style="font-size:32px;filter:drop-shadow(0 2px 8px rgba(37,99,235,0.5))">🔵${getPlaceEmoji(selectedPlace.place_type)}</div>`,
+            html: `<span class="material-symbols-outlined" style="font-size:32px;color:var(--primary);filter:drop-shadow(0 2px 8px var(--shadow-primary))">${getPlaceMaterialIcon(selectedPlace.place_type)}</span>`,
             iconSize: [32, 32],
             iconAnchor: [16, 32],
           })}
         >
           <Popup>
-            <strong>{selectedPlace.name}</strong><br />
-            <span style={{ fontSize: 12, color: '#666' }}>{selectedPlace.address}</span>
+            <div style={{ fontFamily: 'var(--font)' }}>
+              <strong>{selectedPlace.name}</strong><br />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedPlace.address}</span>
+            </div>
           </Popup>
         </Marker>
       )}
@@ -363,14 +379,19 @@ export default function MapView({
           position={[wp.lat, wp.lng]}
           icon={L.divIcon({
             className: '',
-            html: `<div style="font-size:20px;filter:drop-shadow(0 2px 6px rgba(245,158,11,0.8))">🟠<span style="position:absolute;top:-4px;left:10px;background:#f59e0b;color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:8px;line-height:14px">${i+1}</span></div>`,
-            iconSize: [28, 28],
-            iconAnchor: [14, 28],
+            html: `<div style="position:relative;display:flex;align-items:center;justify-content:center;width:28px;height:28px">
+              <span class="material-symbols-outlined" style="font-size:24px;color:#f59e0b;filter:drop-shadow(0 2px 6px rgba(245,158,11,0.8))">radio_button_checked</span>
+              <span style="position:absolute;top:-2px;right:-4px;background:#f59e0b;color:#000;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;line-height:14px;min-width:16px;text-align:center">${i+1}</span>
+            </div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 28],
           })}
         >
           <Popup>
-            <strong>📍 Stop {i + 1}</strong><br />
-            <span style={{ fontSize: 12, color: '#666' }}>{wp.query || `Waypoint ${i + 1}`}</span>
+            <div style={{ fontFamily: 'var(--font)' }}>
+              <strong>Stop {i + 1}</strong><br />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{wp.query || `Waypoint ${i + 1}`}</span>
+            </div>
           </Popup>
         </Marker>
       ))}
