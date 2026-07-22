@@ -2188,8 +2188,9 @@ class TransitService:
         if key in self._path_cache:
             return self._path_cache[key]
         try:
+            base_url = settings.OSRM_FOOT_URL if profile in ("walking", "foot") else settings.OSRM_BASE_URL
             async with httpx.AsyncClient(timeout=2.0) as client:
-                url = f"{settings.OSRM_BASE_URL}/route/v1/{profile}/{slng},{slat};{dlng},{dlat}?overview=full&geometries=geojson"
+                url = f"{base_url}/route/v1/{profile}/{slng},{slat};{dlng},{dlat}?overview=full&geometries=geojson"
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()

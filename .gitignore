@@ -28,3 +28,4 @@ n8n-instance/dist/
 Thumbs.db
 
 .env
+.env.example

@@ -1,75 +1,33 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useCallback, useState } from 'react'
+import { useApp } from '../context/AppContext'
 import SearchPanel from '../components/SearchPanel'
 import AToBPanel from '../components/AToBPanel'
 import TripPanel from '../components/TripPanel'
-import SegmentPanel from '../components/SegmentPanel'
 import DiscoveryPanel from '../components/DiscoveryPanel'
-import NewsOverlay from '../components/NewsOverlay'
 import MapView from '../components/MapView'
-import type { PlaceResult, AppMode, NewsItem, MapRouteGeometry, NavTab } from '../types'
+import type { PlaceResult, MapRouteGeometry } from '../types'
 import { enrichPlace } from '../services/api'
 
-interface MainPageProps {
-  mode: AppMode
-  onModeChange: (mode: AppMode) => void
-  selectedPlace: PlaceResult | null
-  onSelectPlace: (place: PlaceResult) => void
-  mapCenter: [number, number]
-  onMapCenterChange: (center: [number, number]) => void
-  userLocation: [number, number] | null
-  sourceLocation: [number, number] | null
-  onSourceLocationChange: (loc: [number, number] | null) => void
-  destLocation: [number, number] | null
-  onDestLocationChange: (loc: [number, number] | null) => void
-  onNavigateToPlace: (place: PlaceResult) => void
-  mapRef: React.MutableRefObject<any>
-  allMarkers: PlaceResult[]
-  onMarkersUpdate: (markers: PlaceResult[]) => void
-  tabs: NavTab[]
-}
+export default function MainPage() {
+  const {
+    mode, setMode, tabs,
+    mapCenter, setMapCenter, mapRef,
+    selectedPlace, setSelectedPlace,
+    allMarkers, setAllMarkers,
+    sourceLocation, destLocation,
+    userLocation, trackingActive, liveTrackingPos,
+    routeGeometry, setRouteGeometry,
+    newsItems, setNewsItems,
+    openDiscovery, showDiscovery, discoveryPlace,
+  } = useApp()
 
-export default function MainPage({
-  mode, onModeChange, selectedPlace, onSelectPlace,
-  mapCenter, onMapCenterChange, userLocation,
-  sourceLocation, onSourceLocationChange, destLocation, onDestLocationChange,
-  onNavigateToPlace, mapRef, allMarkers, onMarkersUpdate, tabs,
-}: MainPageProps) {
-  const [showDiscovery, setShowDiscovery] = useState(false)
-  const [discoveryPlace, setDiscoveryPlace] = useState<PlaceResult | null>(null)
-  const [searchResults, setSearchResults] = useState<PlaceResult[]>([])
-  const [nearbyResults, setNearbyResults] = useState<PlaceResult[]>([])
-  const [searchCenter, setSearchCenter] = useState<[number, number] | null>(null)
   const [enrichingName, setEnrichingName] = useState<string | null>(null)
-  const [routeGeometry, setRouteGeometry] = useState<any>(null)
-  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
-  const [mapWaypoints, setMapWaypoints] = useState<{ lat: number; lng: number; query: string }[]>([])
-  const [segmentPanelOpen, setSegmentPanelOpen] = useState(false)
-  const [segmentSourceName, setSegmentSourceName] = useState('')
-  const [segmentDestName, setSegmentDestName] = useState('')
-  const [segmentGroupSize, setSegmentGroupSize] = useState(1)
-  const [segmentBudget, setSegmentBudget] = useState<number | undefined>(undefined)
-  const [segmentGeometry, setSegmentGeometry] = useState<MapRouteGeometry[] | null>(null)
-  const [liveTrackingPos, setLiveTrackingPos] = useState<[number, number] | null>(null)
-  const [trackingActive, setTrackingActive] = useState(false)
-  const [trackingWatcherRef] = useState<React.MutableRefObject<number | null>>({ current: null } as any)
-
-  const handleSearchResults = useCallback((results: PlaceResult[], center?: [number, number]) => {
-    setSearchResults(results)
-    setNearbyResults([])
-    if (center) setSearchCenter(center)
-  }, [])
-
-  const handleNearbyResults = useCallback((results: PlaceResult[], center: [number, number]) => {
-    setNearbyResults(results)
-    setSearchResults([])
-    setSearchCenter(center)
-  }, [])
 
   const handleViewOnMap = useCallback((place: PlaceResult) => {
-    onSelectPlace(place)
-    setShowDiscovery(true)
-    setDiscoveryPlace(place)
-  }, [onSelectPlace])
+    setSelectedPlace(place)
+    setMapCenter([place.lat, place.lng])
+    if (mapRef.current) mapRef.current.flyTo([place.lat, place.lng], 15)
+  }, [setSelectedPlace, setMapCenter, mapRef])
 
   const handleViewDetails = useCallback(async (place: PlaceResult) => {
     setEnrichingName(place.name)
@@ -77,200 +35,124 @@ export default function MainPage({
       const enriched = await enrichPlace(place)
       if (enriched?.status === 'success' && enriched.place) {
         const fullPlace = { ...place, ...enriched.place }
-        onSelectPlace(fullPlace)
-        setDiscoveryPlace(fullPlace)
+        setSelectedPlace(fullPlace)
+        openDiscovery(fullPlace)
       } else {
-        onSelectPlace(place)
-        setDiscoveryPlace(place)
+        setSelectedPlace(place)
+        openDiscovery(place)
       }
     } catch {
-      onSelectPlace(place)
-      setDiscoveryPlace(place)
+      setSelectedPlace(place)
+      openDiscovery(place)
     }
     setEnrichingName(null)
-    setShowDiscovery(true)
-  }, [onSelectPlace])
+  }, [setSelectedPlace, openDiscovery])
 
-  const handleCloseDiscovery = useCallback(() => {
-    setShowDiscovery(false)
-    setDiscoveryPlace(null)
-  }, [])
+  const {
+    setSourceLocation: setSrcLoc,
+    setDestLocation: setDstLoc,
+    closeDiscovery,
+  } = useApp()
 
-  const handleRouteGeometry = useCallback((geo: any) => {
-    setRouteGeometry(geo)
-  }, [])
+  const handleNavigateToPlace = useCallback((place: PlaceResult) => {
+    setMode('atob')
+    setSrcLoc(userLocation)
+    setDstLoc([place.lat, place.lng])
+  }, [setMode, userLocation, setSrcLoc, setDstLoc])
 
-  const handleOpenSegmentPanel = useCallback((sourceName: string, destName: string, groupSize: number, budget?: number) => {
-    setSegmentSourceName(sourceName)
-    setSegmentDestName(destName)
-    setSegmentGroupSize(groupSize)
-    setSegmentBudget(budget)
-    setSegmentPanelOpen(true)
-    setSegmentGeometry(null)
-    setTimeout(() => { mapRef.current?.invalidateSize?.() }, 100)
-  }, [mapRef])
-
-  const handleCloseSegmentPanel = useCallback(() => {
-    setSegmentPanelOpen(false)
-    setSegmentGeometry(null)
-    if (trackingWatcherRef.current !== null) {
-      navigator.geolocation.clearWatch(trackingWatcherRef.current)
-      trackingWatcherRef.current = null
-    }
-    setTrackingActive(false)
-    setLiveTrackingPos(null)
-    setTimeout(() => { mapRef.current?.invalidateSize?.() }, 100)
-  }, [mapRef, trackingWatcherRef])
-
-  const handleStartJourney = useCallback(() => {
-    if (!navigator.geolocation) return
-    setTrackingActive(true)
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setLiveTrackingPos([pos.coords.latitude, pos.coords.longitude]),
-      () => {},
-      { enableHighAccuracy: true, timeout: 5000 }
-    )
-    trackingWatcherRef.current = navigator.geolocation.watchPosition(
-      (pos) => setLiveTrackingPos([pos.coords.latitude, pos.coords.longitude]),
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
-    )
-  }, [trackingWatcherRef])
-
-  const handleSegmentGeometry = useCallback((geo: MapRouteGeometry[] | null) => {
-    setSegmentGeometry(geo)
-  }, [])
-
-  const handleLocateNews = useCallback((item: NewsItem) => {
-    if (item.lat && item.lng) {
-      onMapCenterChange([item.lat, item.lng])
-    }
-  }, [onMapCenterChange])
-
-  const handleModeChange = useCallback((newMode: AppMode) => {
-    onModeChange(newMode)
-    setShowDiscovery(false)
-    setDiscoveryPlace(null)
-    setSearchResults([])
-    setNearbyResults([])
-    setSegmentPanelOpen(false)
+  const handleModeChange = useCallback((newMode: 'search' | 'atob' | 'trip') => {
+    setMode(newMode)
     setRouteGeometry(null)
-  }, [onModeChange])
+  }, [setMode, setRouteGeometry])
 
-  const renderPanel = () => {
-    switch (mode) {
-      case 'search':
-        return (
-          <SearchPanel
-            onSelectPlace={onSelectPlace}
-            onViewOnMap={handleViewOnMap}
-            onViewDetails={handleViewDetails}
-            onNavigateToPlace={onNavigateToPlace}
-            onSearchResults={handleSearchResults}
-            onNearbyResults={(results) => handleNearbyResults(results, mapCenter)}
-            userLocation={userLocation}
-            mapCenter={searchCenter || mapCenter}
-            enrichingName={enrichingName}
-          />
-        )
-      case 'atob':
-        return (
-          <AToBPanel
-            sourceLocation={sourceLocation}
-            onSourceLocationChange={onSourceLocationChange}
-            destLocation={destLocation}
-            onDestLocationChange={onDestLocationChange}
-            onMapCenterChange={onMapCenterChange}
-            onRouteGeometry={handleRouteGeometry}
-            onOpenSegmentPanel={handleOpenSegmentPanel}
-            onWaypointsChange={setMapWaypoints}
-            mapRef={mapRef}
-            onNewsUpdate={setNewsItems}
-          />
-        )
-      case 'trip':
-        return <TripPanel />
-      default:
-        return null
-    }
-  }
+  const handleMarkerClick = useCallback((place: PlaceResult) => {
+    setSelectedPlace(place)
+    setMapCenter([place.lat, place.lng])
+  }, [setSelectedPlace, setMapCenter])
 
   return (
-    <div className="app-container">
-      <div className="sidebar">
-        <div className="sidebar-header">
-          <span className="material-symbols-outlined brand-icon">explore</span>
-          <h1>VOYAGER</h1>
+    <div style={{ display: 'flex', height: '100vh', width: '100vw', position: 'relative', overflow: 'hidden' }}>
+      <div className="sidebar glass-strong" style={{
+        width: 420, minWidth: 420, display: 'flex', flexDirection: 'column', zIndex: 1000,
+        borderRight: '1px solid rgba(198,197,212,0.3)', position: 'relative',
+      }}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(198,197,212,0.2)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 24, color: 'var(--primary)' }}>explore</span>
+          <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--primary)', letterSpacing: '-0.02em' }}>VOYAGER</span>
         </div>
-        <div className="pill-nav">
+
+        <div style={{ display: 'flex', padding: '8px 16px', gap: 4, borderBottom: '1px solid rgba(198,197,212,0.2)' }}>
           {tabs.map(tab => (
-            <button
-              key={tab.key}
-              className={`pill-tab${mode === tab.key ? ' active' : ''}`}
+            <button key={tab.key}
               onClick={() => handleModeChange(tab.key)}
-            >
-              <span className="material-symbols-outlined">{tab.icon}</span>
+              style={{
+                flex: 1, padding: '8px 12px', border: 'none', borderRadius: 'var(--radius-full)',
+                background: mode === tab.key ? 'var(--primary)' : 'transparent',
+                color: mode === tab.key ? 'var(--on-primary)' : 'var(--text-muted)',
+                fontSize: 13, fontWeight: 500, cursor: 'pointer', transition: 'all 0.2s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>{tab.icon}</span>
               <span>{tab.label}</span>
             </button>
           ))}
         </div>
-        <div className="sidebar-content">
-          {renderPanel()}
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: mode === 'search' ? 0 : '14px 16px' }}>
+          {mode === 'search' && (
+            <SearchPanel
+              onSelectPlace={(place) => { setSelectedPlace(place); handleViewOnMap(place) }}
+              onViewOnMap={handleViewOnMap}
+              onViewDetails={handleViewDetails}
+              onNavigateToPlace={handleNavigateToPlace}
+              enrichingName={enrichingName}
+            />
+          )}
+          {mode === 'atob' && (
+            <AToBPanel
+              onRouteGeometry={setRouteGeometry}
+              onNewsUpdate={setNewsItems}
+            />
+          )}
+          {mode === 'trip' && <TripPanel />}
         </div>
       </div>
-      <div className="map-container">
+
+      <div style={{ flex: 1, position: 'relative' }}>
         <MapView
           mapRef={mapRef}
           center={mapCenter}
+          onCenterChange={setMapCenter}
           userLocation={userLocation}
-          allMarkers={mode === 'search' ? allMarkers : []}
+          allMarkers={allMarkers}
           selectedPlace={selectedPlace}
-          onMarkerClick={onSelectPlace}
+          onMarkerClick={handleMarkerClick}
           routeGeometry={routeGeometry}
           sourceLocation={sourceLocation}
           destLocation={destLocation}
-          waypoints={mapWaypoints}
           liveTrackingPos={liveTrackingPos}
+          trackingActive={trackingActive}
           newsItems={newsItems}
-          onCenterChange={onMapCenterChange}
         />
+
         {showDiscovery && discoveryPlace && mode === 'search' && (
           <DiscoveryPanel
             place={discoveryPlace}
-            onClose={handleCloseDiscovery}
+            onClose={closeDiscovery}
           />
         )}
-        <NewsOverlay
-          news={newsItems}
-          loading={false}
-          onLocateNews={handleLocateNews}
-        />
       </div>
+
       <div className="bottom-pill-nav">
         {tabs.map(tab => (
-          <button
-            key={tab.key}
-            className={`bottom-pill-tab${mode === tab.key ? ' active' : ''}`}
+          <button key={tab.key}
             onClick={() => handleModeChange(tab.key)}
-          >
-            <span className={`material-symbols-outlined${mode === tab.key ? ' fill' : ''}`}>{tab.icon}</span>
+            className={`bottom-pill-tab${mode === tab.key ? ' active' : ''}`}>
+            <span className={`material-symbols-outlined${mode === tab.key ? ' fill' : ''}`} style={{ fontSize: 18 }}>{tab.icon}</span>
             <span>{tab.label}</span>
           </button>
         ))}
       </div>
-      {segmentPanelOpen && (
-        <SegmentPanel
-          sourceName={segmentSourceName}
-          destName={segmentDestName}
-          groupSize={segmentGroupSize}
-          budget={segmentBudget}
-          sourceLocation={sourceLocation ?? userLocation ?? mapCenter}
-          destLocation={destLocation ?? (userLocation ? [userLocation[0] + 0.01, userLocation[1] + 0.01] : mapCenter)}
-          onClose={handleCloseSegmentPanel}
-          onStartJourney={handleStartJourney}
-          onGeometryChange={handleSegmentGeometry}
-        />
-      )}
     </div>
   )
 }

@@ -14,6 +14,7 @@ export interface PlaceResult {
   hotel_prices?: HotelPriceInfo
   reviews?: PlaceReview[]
   review_source?: string
+  concerns?: string
 }
 
 export interface HotelPriceInfo {
@@ -56,6 +57,7 @@ export interface RouteLeg {
   from_lng?: number
   to_lat?: number
   to_lng?: number
+  path?: number[][]
 }
 
 export interface RouteOption {

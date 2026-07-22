@@ -1,32 +1,41 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { PlaceResult } from '../types'
 import { searchPlaces, getNearbyPlaces, getSuggestions } from '../services/api'
-import { getPlaceIconName, getPinColor, getScoreLabel } from '../utils/helpers'
+import { getPlaceIconName, getScoreLabel } from '../utils/helpers'
 
 interface SearchPanelProps {
   onSelectPlace: (place: PlaceResult) => void
-  onNavigateToPlace: (place: PlaceResult) => void
-  mapCenter: [number, number]
-  userLocation: [number, number] | null
-  onSearchResults: (results: PlaceResult[], center?: [number, number]) => void
-  onNearbyResults: (results: PlaceResult[]) => void
   onViewOnMap: (place: PlaceResult) => void
-  onViewDetails?: (place: PlaceResult) => void
+  onViewDetails: (place: PlaceResult) => void
+  onNavigateToPlace: (place: PlaceResult) => void
   enrichingName?: string | null
 }
 
 const NEARBY_TAGS = [
-  'all', 'mall', 'hospital', 'restaurant', 'hotel', 'lodge',
-  'temple', 'mosque', 'school', 'park', 'atm', 'bank', 'petrol_pump',
-  'charging_station', 'bus_stop', 'metro_station', 'airport',
-  'railway_station', 'police', 'cafe', 'pharmacy', 'supermarket',
-  'gym', 'cinema', 'clinic', 'church'
+  { key: 'all', icon: 'explore', label: 'All' },
+  { key: 'atm', icon: 'account_balance', label: 'ATM' },
+  { key: 'bank', icon: 'account_balance', label: 'Bank' },
+  { key: 'hospital', icon: 'local_hospital', label: 'Hospital' },
+  { key: 'pharmacy', icon: 'local_pharmacy', label: 'Pharmacy' },
+  { key: 'restaurant', icon: 'restaurant', label: 'Restaurant' },
+  { key: 'cafe', icon: 'local_cafe', label: 'Cafe' },
+  { key: 'hotel', icon: 'hotel', label: 'Hotel' },
+  { key: 'mall', icon: 'local_mall', label: 'Mall' },
+  { key: 'petrol_pump', icon: 'local_gas_station', label: 'Petrol' },
+  { key: 'charging_station', icon: 'ev_station', label: 'EV Station' },
+  { key: 'supermarket', icon: 'local_grocery_store', label: 'Market' },
+  { key: 'park', icon: 'park', label: 'Park' },
+  { key: 'bus_stop', icon: 'directions_bus', label: 'Bus Stop' },
+  { key: 'metro_station', icon: 'subway', label: 'Metro' },
+  { key: 'temple', icon: 'temple_hindu', label: 'Temple' },
+  { key: 'police', icon: 'local_police', label: 'Police' },
+  { key: 'school', icon: 'school', label: 'School' },
+  { key: 'gym', icon: 'fitness_center', label: 'Gym' },
+  { key: 'cinema', icon: 'theater_comedy', label: 'Cinema' },
 ]
 
 export default function SearchPanel({
-  onSelectPlace, onNavigateToPlace, mapCenter, userLocation,
-  onSearchResults, onNearbyResults, onViewOnMap,
-  onViewDetails, enrichingName
+  onSelectPlace, onViewOnMap, onViewDetails, onNavigateToPlace, enrichingName,
 }: SearchPanelProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<PlaceResult[]>([])
@@ -36,7 +45,7 @@ export default function SearchPanel({
   const [radius, setRadius] = useState(2)
   const [activeTag, setActiveTag] = useState('all')
   const [nearbyResults, setNearbyResults] = useState<PlaceResult[]>([])
-  const [mode, setMode] = useState<'search' | 'nearby'>('search')
+  const [tab, setTab] = useState<'search' | 'nearby'>('search')
   const [searchedPlace, setSearchedPlace] = useState<PlaceResult | null>(null)
   const searchAbortRef = useRef<AbortController | null>(null)
 
@@ -46,30 +55,21 @@ export default function SearchPanel({
     if (searchAbortRef.current) searchAbortRef.current.abort()
     const ctrl = new AbortController()
     searchAbortRef.current = ctrl
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
-      const lat = userLocation ? userLocation[0] : mapCenter[0]
-      const lng = userLocation ? userLocation[1] : mapCenter[1]
-      const data = await searchPlaces(q, lat, lng, ctrl.signal)
+      const data = await searchPlaces(q, 12.9716, 77.5946, ctrl.signal)
       if (ctrl.signal.aborted) return
       const places = data.results || []
-      setResults(places)
-      setSuggestions([])
-      onSearchResults(places, mapCenter)
-      if (places.length === 0) {
-        setError(`No results found for "${q}". Try a different search term.`)
-      } else {
+      setResults(places); setSuggestions([])
+      if (places.length > 0) {
         setSearchedPlace(places[0])
         onSelectPlace(places[0])
-      }
+      } else setError(`No results found for "${q}". Try a different search.`)
     } catch (err) {
       if (ctrl.signal.aborted) return
       setError('Search failed. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }, [query, mapCenter, userLocation, onSelectPlace, onSearchResults])
+    } finally { setLoading(false) }
+  }, [query, onSelectPlace])
 
   useEffect(() => {
     if (!query || query.length < 2) { setSuggestions([]); return }
@@ -80,178 +80,176 @@ export default function SearchPanel({
     return () => clearTimeout(timer)
   }, [query])
 
-  const handleSuggestionClick = useCallback((suggestion: string) => {
-    setQuery(suggestion)
-    setSuggestions([])
-  }, [])
-
   const handleNearby = useCallback(async (tag: string) => {
-    setActiveTag(tag)
-    setLoading(true)
-    setError('')
+    setActiveTag(tag); setLoading(true); setError('')
     try {
-      const centerLat = searchedPlace ? searchedPlace.lat : (userLocation ? userLocation[0] : mapCenter[0])
-      const centerLng = searchedPlace ? searchedPlace.lng : (userLocation ? userLocation[1] : mapCenter[1])
-      const data = await getNearbyPlaces(centerLat, centerLng, radius, tag === 'all' ? undefined : tag)
+      const lat = searchedPlace ? searchedPlace.lat : 12.9716
+      const lng = searchedPlace ? searchedPlace.lng : 77.5946
+      const data = await getNearbyPlaces(lat, lng, radius, tag === 'all' ? undefined : tag)
       const places = data.results || []
       setNearbyResults(places)
-      onNearbyResults(places)
-      if (places.length === 0) {
-        setError(`No ${tag} found within ${radius}km. Try increasing radius.`)
-      }
+      if (places.length === 0) setError(`No ${tag} found within ${radius}km. Try increasing radius.`)
     } catch { setError('Nearby search failed.') }
     finally { setLoading(false) }
-  }, [radius, searchedPlace, userLocation, mapCenter, onNearbyResults])
+  }, [radius, searchedPlace])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleSearch()
   }, [handleSearch])
 
   return (
-    <div>
-      <div className="search-input-group">
-        <input
-          className="search-input"
-          type="text"
-          placeholder="Search any place in Bengaluru..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-        <button className="search-btn" onClick={handleSearch} disabled={loading}>
-          {loading ? '...' : 'Search'}
-        </button>
+    <div style={{ padding: 0 }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(198,197,212,0.15)' }}>
+        <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
+          <div style={{
+            flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 14px', borderRadius: 'var(--radius-lg)',
+            background: 'rgba(0,0,0,0.03)', border: '1px solid var(--outline-variant)',
+          }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 18, color: 'var(--text-muted)' }}>search</span>
+            <input type="text" placeholder="Search any place in Bengaluru..."
+              value={query} onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: 14, color: 'var(--text)' }}
+            />
+          </div>
+          <button onClick={handleSearch} disabled={loading}
+            style={{
+              padding: '10px 20px', border: 'none', borderRadius: 'var(--radius-lg)',
+              background: 'var(--primary)', color: 'var(--on-primary)',
+              fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              opacity: loading ? 0.6 : 1,
+            }}>
+            {loading ? '...' : 'Search'}
+          </button>
+        </div>
+
+        {suggestions.length > 0 && (
+          <div className="glass" style={{
+            position: 'absolute', left: 16, right: 100, top: 108, zIndex: 10000,
+            borderRadius: 'var(--radius-md)', maxHeight: 200, overflowY: 'auto',
+            boxShadow: '0 8px 32px var(--shadow-primary)',
+          }}>
+            {suggestions.map((s, i) => (
+              <div key={i} onClick={() => { setQuery(s); setSuggestions([]) }}
+                style={{ padding: '10px 14px', cursor: 'pointer', fontSize: 13, borderBottom: i < suggestions.length - 1 ? '1px solid var(--outline-variant)' : 'none', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--text-muted)' }}>location_on</span>
+                {s}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {suggestions.length > 0 && (
-        <div className="suggestions-dropdown">
-          {suggestions.map((s, i) => (
-            <div key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s)}>
-              <span className="material-symbols-outlined" style={{ fontSize: 14, marginRight: 6, color: 'var(--text-muted)' }}>location_on</span>
-              {s}
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 0, padding: '8px 16px', borderBottom: '1px solid rgba(198,197,212,0.15)' }}>
+        {['search', 'nearby'].map(t => (
+          <button key={t} onClick={() => setTab(t as typeof tab)}
+            style={{
+              flex: 1, padding: '8px 12px', border: 'none', borderRadius: 'var(--radius-full)',
+              background: tab === t ? 'var(--primary)' : 'transparent',
+              color: tab === t ? 'var(--on-primary)' : 'var(--text-muted)',
+              fontSize: 13, fontWeight: 500, cursor: 'pointer', transition: 'all 0.15s',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>{t === 'search' ? 'search' : 'near_me'}</span>
+            {t === 'search' ? 'Search Specific' : 'Search Nearby'}
+          </button>
+        ))}
+      </div>
 
       {error && (
-        <div className="insights-box" style={{ borderLeftColor: 'var(--error)', margin: '8px 0', fontSize: 13 }}>
-          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4, color: 'var(--error)' }}>error</span>
+        <div style={{ margin: '8px 16px', padding: '10px 14px', borderRadius: 'var(--radius-md)', background: 'var(--error-container)', color: 'var(--error)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>error</span>
           {error}
         </div>
       )}
 
-      <div className="mode-selector" style={{ marginBottom: 12 }}>
-        <button
-          className={`mode-btn ${mode === 'search' ? 'active' : ''}`}
-          onClick={() => setMode('search')}
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>search</span>
-          Search
-        </button>
-        <button
-          className={`mode-btn ${mode === 'nearby' ? 'active' : ''}`}
-          onClick={() => { setMode('nearby'); if (!nearbyResults.length) handleNearby(activeTag) }}
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: 16, verticalAlign: 'middle', marginRight: 4 }}>near_me</span>
-          Nearby
-        </button>
-      </div>
-
-      {mode === 'search' && (
-        <div>
-          {loading && (
-            <div className="suggestions-dropdown" style={{ position: 'relative', marginTop: 8 }}>
-              {[1,2,3].map(i => (
-                <div key={i} className="suggestion-item" style={{ pointerEvents: 'none' }}>
-                  <span style={{ display: 'inline-block', width: 16, height: 12, background: 'var(--outline-variant)', borderRadius: 2 }} />
-                  <span style={{ display: 'inline-block', width: `${60 + i * 20}px`, height: 12, background: 'var(--outline-variant)', borderRadius: 2, marginLeft: 6 }} />
-                </div>
-              ))}
-              <div style={{ padding: '4px 8px', fontSize: 10, color: 'var(--text-muted)' }}>Searching...</div>
+      {tab === 'search' && (
+        <div style={{ padding: '8px 16px' }}>
+          {loading && [1,2,3].map(i => (
+            <div key={i} style={{ padding: 14, marginBottom: 8, borderRadius: 'var(--radius-lg)', background: 'var(--surface-container)' }}>
+              <div className="loading-skeleton" style={{ width: `${60 + i * 20}%`, height: 14, marginBottom: 6 }} />
+              <div className="loading-skeleton" style={{ width: '40%', height: 12 }} />
             </div>
-          )}
-
-          {results.length > 0 && !loading && (
-            <div>
-              {results.map((place, i) => (
-                <PlaceCard
-                  key={i} place={place}
-                  onView={() => { onSelectPlace(place); onViewOnMap(place); }}
-                  onNavigate={() => onNavigateToPlace(place)}
-                  onViewDetails={() => onViewDetails?.(place)}
-                  isLoading={enrichingName === place.name}
-                />
-              ))}
-            </div>
-          )}
-
+          ))}
+          {results.map((place, i) => (
+            <PlaceCard key={i} place={place}
+              onView={() => { onSelectPlace(place); onViewOnMap(place) }}
+              onNavigate={() => onNavigateToPlace(place)}
+              onViewDetails={() => onViewDetails(place)}
+              isLoading={enrichingName === place.name}
+            />
+          ))}
           {results.length === 0 && !loading && !error && (
-            <div className="no-data">
-              <span className="material-symbols-outlined" style={{ fontSize: 40, display: 'block', marginBottom: 8, color: 'var(--outline-variant)' }}>search</span>
-              {userLocation ? 'Search any place in Bengaluru' : 'Allow location access for better results'}
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 48, display: 'block', marginBottom: 12, color: 'var(--outline-variant)' }}>search</span>
+              <div className="text-body-md">Search any place or landmark in Bengaluru</div>
             </div>
           )}
         </div>
       )}
 
-      {mode === 'nearby' && (
+      {tab === 'nearby' && (
         <div>
           {searchedPlace && (
-            <div className="insights-box" style={{ padding: '6px 10px', marginBottom: 8 }}>
-              <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>near_me</span>
-              Around: <strong>{searchedPlace.name}</strong>
+            <div style={{ margin: '8px 16px', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--primary-fixed)', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--primary)' }}>near_me</span>
+              <span>Around: <strong>{searchedPlace.name}</strong></span>
               <button onClick={() => setSearchedPlace(null)}
-                style={{ marginLeft: 8, background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: 11 }}>
-                (Use my location)
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                Use my location
               </button>
             </div>
           )}
 
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ padding: '8px 16px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
               <span>Radius: {radius} km</span>
-              <span>{nearbyResults.length} results</span>
+              <span>{nearbyResults.length} places found</span>
             </div>
             <input type="range" min={0.5} max={10} step={0.5} value={radius}
-              onChange={(e) => setRadius(parseFloat(e.target.value))} style={{ width: '100%' }} />
+              onChange={(e) => setRadius(parseFloat(e.target.value))}
+              style={{ width: '100%', marginBottom: 8 }} />
           </div>
 
-          <div className="nearby-tags">
+          <div className="hide-scrollbar" style={{
+            display: 'flex', gap: 6, padding: '0 16px 8px', overflowX: 'auto',
+          }}>
             {NEARBY_TAGS.map((tag) => (
-              <button key={tag}
-                className={`nearby-tag ${activeTag === tag ? 'active' : ''}`}
-                onClick={() => handleNearby(tag)}>
-                {tag === 'all' ? 'All' : tag.replace('_', ' ')}
+              <button key={tag.key} onClick={() => handleNearby(tag.key)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+                  padding: '6px 14px', border: '1px solid var(--outline-variant)',
+                  borderRadius: 'var(--radius-full)',
+                  background: activeTag === tag.key ? 'var(--primary)' : 'rgba(255,255,255,0.8)',
+                  color: activeTag === tag.key ? 'var(--on-primary)' : 'var(--text-muted)',
+                  fontSize: 12, cursor: 'pointer', fontWeight: 500, transition: 'all 0.15s',
+                }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>{tag.icon}</span>
+                {tag.label}
               </button>
             ))}
           </div>
 
-          {loading && (
-            <div style={{ marginTop: 8 }}>
-              {[1,2,3].map(i => (
-                <div key={i} style={{ padding: 12, marginBottom: 8, background: 'var(--surface-container)', borderRadius: 'var(--radius-lg)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ width: 14, height: 14, background: 'var(--outline-variant)', borderRadius: '50%', display: 'inline-block' }} />
-                    <span style={{ display: 'inline-block', width: `${100 + i * 30}px`, height: 14, background: 'var(--outline-variant)', borderRadius: 4 }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ marginTop: 8 }}>
+          <div style={{ padding: '8px 16px' }}>
+            {loading && [1,2,3].map(i => (
+              <div key={i} style={{ padding: 14, marginBottom: 8, borderRadius: 'var(--radius-lg)', background: 'var(--surface-container)' }}>
+                <div className="loading-skeleton" style={{ width: `${50 + i * 20}%`, height: 14, marginBottom: 6 }} />
+                <div className="loading-skeleton" style={{ width: '30%', height: 12 }} />
+              </div>
+            ))}
             {nearbyResults.map((place, i) => (
-              <PlaceCard
-                key={i} place={place}
-                onView={() => { onSelectPlace(place); onViewOnMap(place); }}
+              <PlaceCard key={i} place={place}
+                onView={() => { onSelectPlace(place); onViewOnMap(place) }}
                 onNavigate={() => onNavigateToPlace(place)}
-                onViewDetails={() => onViewDetails?.(place)}
+                onViewDetails={() => onViewDetails(place)}
                 isLoading={enrichingName === place.name}
               />
             ))}
             {nearbyResults.length === 0 && !loading && !error && (
-              <div className="no-data">Click a tag above to find nearby places</div>
+              <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
+                Click a category to find nearby places
+              </div>
             )}
           </div>
         </div>
@@ -261,113 +259,105 @@ export default function SearchPanel({
 }
 
 function PlaceCard({ place, onView, onNavigate, onViewDetails, isLoading }: {
-  place: PlaceResult
-  onView: () => void
-  onNavigate: () => void
-  onViewDetails?: () => void
-  isLoading?: boolean
+  place: PlaceResult; onView: () => void; onNavigate: () => void; onViewDetails?: () => void; isLoading?: boolean
 }) {
   const score = place.reliability_score || 0.5
-  const isGood = score > 0.7
+  const isGood = score >= 0.7
+  const isMid = score >= 0.4 && score < 0.7
   const [imgError, setImgError] = useState(false)
   const [showReviews, setShowReviews] = useState(false)
   const reviews = place.reviews?.slice(0, 3) || []
 
   return (
-    <div
-      className={`place-card${isGood ? ' recommended' : ''}`}
-      style={{ cursor: 'pointer' }}
-      onClick={onView}
-    >
+    <div onClick={onView} className="slide-up" style={{
+      padding: 14, marginBottom: 10, borderRadius: 'var(--radius-lg)', cursor: 'pointer',
+      background: isGood ? '#f0fdf4' : isMid ? '#fffbeb' : '#fef2f2',
+      border: `1px solid ${isGood ? '#bbf7d0' : isMid ? '#fde68a' : '#fecaca'}`,
+      borderLeft: `3px solid ${isGood ? 'var(--secondary)' : isMid ? '#eab308' : 'var(--error)'}`,
+      transition: 'all 0.2s',
+    }}>
       {place.image_url && !imgError && (
-        <div style={{ width: '100%', height: 120, overflow: 'hidden', borderRadius: 'var(--radius-md) var(--radius-md) 0 0', marginBottom: 8 }}>
+        <div style={{ width: '100%', height: 110, overflow: 'hidden', borderRadius: 'var(--radius-md)', marginBottom: 8 }}>
           <img src={place.image_url} alt={place.name}
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             onError={() => setImgError(true)} />
         </div>
       )}
 
-      <div className="place-name">
-        <span className="material-symbols-outlined" style={{
-          fontSize: 20, color: getPinColor(isGood, score), marginRight: 4
-        }}>
-          {getPlaceIconName(place.place_type)}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span className="material-symbols-outlined fill" style={{
+          fontSize: 20, color: isGood ? '#16a34a' : isMid ? '#ca8a04' : '#dc2626',
+        }}>{getPlaceIconName(place.place_type)}</span>
+        <span className="text-headline-sm" style={{ flex: 1 }}>{place.name}</span>
+        <span className={`reliability-pill ${isGood ? 'good' : isMid ? 'mid' : 'bad'}`}>
+          <span className="material-symbols-outlined" style={{ fontSize: 12 }}>{isGood ? 'verified' : isMid ? 'info' : 'warning'}</span>
+          {getScoreLabel(score)} ({(score * 100).toFixed(0)}%)
         </span>
-        {place.name}
+      </div>
+
+      {place.address && (
+        <div className="text-body-sm" style={{ color: 'var(--text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 12 }}>location_on</span>
+          {place.address}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, flexWrap: 'wrap' }}>
+        {place.distance_km !== undefined && <span>📍 {place.distance_km} km</span>}
+        {place.rating && (
+          <span>
+            <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', color: '#f59e0b' }}>star</span>
+            {' '}{place.rating.toFixed(1)}
+          </span>
+        )}
         <span className="place-type-badge">{place.place_type.replace(/_/g, ' ')}</span>
       </div>
 
-      <div className="place-address">
-        <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>location_on</span>
-        {place.address || place.name}
-      </div>
-
-      <div className="place-meta">
-        {place.distance_km !== undefined && (
-          <span>
-            <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>straighten</span>
-            {place.distance_km} km
-          </span>
-        )}
-        <span>
-          <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>star</span>
-          {(place.rating || 0).toFixed(1)}
-        </span>
-        <span>{((score) * 100).toFixed(0)}% reliable</span>
-      </div>
+      {place.hotel_prices && place.hotel_prices.avg_price > 0 && (
+        <div style={{ fontSize: 12, color: '#b45309', fontWeight: 600, marginBottom: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>payments</span>
+          ₹{place.hotel_prices.min_price} - ₹{place.hotel_prices.max_price} / night
+        </div>
+      )}
 
       {place.review_summary && (
-        <div className="review-summary">
-          <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2 }}>rate_review</span>
+        <div className="text-body-sm" style={{
+          padding: '6px 10px', borderRadius: 'var(--radius-md)',
+          background: 'rgba(255,255,255,0.6)', fontStyle: 'italic', marginBottom: 6,
+        }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 12, verticalAlign: 'middle', marginRight: 2, color: 'var(--primary)' }}>rate_review</span>
           {place.review_summary}
         </div>
       )}
 
       {reviews.length > 0 && (
-        <div style={{ marginTop: 6 }}>
-          <button
-            onClick={(e) => { e.stopPropagation(); setShowReviews(!showReviews) }}
-            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', padding: 0, fontWeight: 500 }}
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>
-              {showReviews ? 'expand_less' : 'expand_more'}
-            </span>
+        <div style={{ marginBottom: 6 }}>
+          <button onClick={(e) => { e.stopPropagation(); setShowReviews(!showReviews) }}
+            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontWeight: 500, padding: 0 }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle' }}>{showReviews ? 'expand_less' : 'expand_more'}</span>
             {showReviews ? 'Hide' : 'Show'} reviews ({reviews.length})
           </button>
           {showReviews && reviews.map((rv, idx) => (
-            <div key={idx} style={{ marginTop: 4, padding: '6px 8px', background: 'var(--surface-container-low)', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
+            <div key={idx} style={{ marginTop: 4, padding: '6px 8px', background: 'rgba(255,255,255,0.5)', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
                 <span style={{ fontWeight: 500 }}>{rv.user}</span>
-                <span>
-                  {Array.from({length: rv.rating}, (_, i) => (
-                    <span key={i} className="material-symbols-outlined" style={{ fontSize: 12, color: '#f59e0b' }}>star</span>
-                  ))}
-                  <span style={{ color: 'var(--text-muted)', marginLeft: 4, fontSize: 11 }}>{rv.date}</span>
-                </span>
+                <span>{Array.from({length: rv.rating}, () => '⭐').join('')} <span style={{ fontSize: 11 }}>{rv.date}</span></span>
               </div>
-              <div style={{ color: 'var(--text)', marginTop: 2, fontStyle: 'italic', fontSize: 11 }}>"{rv.text}"</div>
+              <div style={{ fontStyle: 'italic', marginTop: 2, color: '#555' }}>"{rv.text}"</div>
             </div>
           ))}
         </div>
       )}
 
-      {place.price_info && (
-        <div style={{ marginTop: 4, fontSize: 12, color: '#b45309', fontWeight: 500 }}>
-          <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>payments</span>
-          {place.price_info}
-        </div>
-      )}
-
-      <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-        <button className="nearby-tag" onClick={(e) => { e.stopPropagation(); onViewDetails?.() }} disabled={isLoading}>
-          {isLoading ? (
-            'Loading...'
-          ) : (
-            <><span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>info</span> Details</>
-          )}
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <button onClick={(e) => { e.stopPropagation(); onViewDetails?.() }} disabled={isLoading}
+          style={{ padding: '6px 14px', border: '1px solid var(--outline-variant)', borderRadius: 'var(--radius-full)', background: 'rgba(255,255,255,0.8)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>info</span>
+          Details
         </button>
-        <button className="nearby-tag" onClick={(e) => { e.stopPropagation(); onNavigate() }}>
-          <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 2 }}>directions_transit</span>
+        <button onClick={(e) => { e.stopPropagation(); onNavigate() }}
+          style={{ padding: '6px 14px', border: 'none', borderRadius: 'var(--radius-full)', background: 'var(--primary)', color: 'var(--on-primary)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>directions_transit</span>
           Navigate
         </button>
       </div>
